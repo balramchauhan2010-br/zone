@@ -1,7 +1,3 @@
-# 10 मिनट (600 सेकंड) का ऑटोमैटिक रन
-if "last_refresh" not in st.session_state:
-    st.session_state.last_refresh = datetime.now()
-cat << 'EOF' > ui/app.py
 from __future__ import annotations
 
 import json
@@ -12,15 +8,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 
-try:
-    from streamlit_autorefresh import st_autorefresh
-    # 10 मिनट (600,000 ms) पर बैकग्राउंड ऑटो-रिफ्रेश
-    st_autorefresh(interval=10 * 60 * 1000, key="auto_refresh_10m")
-except Exception:
-    pass
-
 from ui.runtime_config import apply_streamlit_secrets
-
 apply_streamlit_secrets()
 
 from terminal.config import DEFAULT_ANALYSIS_SETTINGS
@@ -84,18 +72,6 @@ DEFAULT_VISIBLE = [
     "CE Total OI", "PE Total OI", "Buildup Classification", "EMA 35 Signal", "EMA 100 Signal",
     "VWAP Signal", "Zone Signal", "Final AI Bias", "Market Data Mode", "Data Source", "Signal Blocker", "Risk Status",
 ]
-
-def _fmt(value, digits: int = 2) -> str:
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return "—"
-    try:
-        return f"{float(value):,.{digits}f}"
-    except (TypeError, ValueError):
-        return str(value)
-
-def _payload_rows(payload: dict) -> list[dict]:
-    data = payload.get("data")
-    return data if isinstance(data, list) else []
 
 def _final_bias(item: dict) -> str:
     ai_bias = str(item.get("final_ai_bias") or "").upper()
@@ -205,7 +181,7 @@ def _render_nse_tab(settings: dict) -> None:
             st.rerun()
 
     payload = _load_scanner("front")
-    rows = _payload_rows(payload)
+    rows = payload.get("data") if isinstance(payload.get("data"), list) else []
     frame = _scanner_frame(rows)
 
     qualified_buys = [row for row in rows if _final_bias(row) == "STRONG BUY"]
@@ -254,7 +230,7 @@ def main() -> None:
     with tabs[0]:
         _render_nse_tab(settings)
     with tabs[1]:
-        st.info("Zone Scanner - universe loaded.")
+        st.info("Zone Scanner universe loaded.")
     with tabs[2]:
         st.info("Global Zone loaded.")
     with tabs[3]:
@@ -264,4 +240,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-EOF
