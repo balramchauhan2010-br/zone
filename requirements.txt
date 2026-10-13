@@ -1,3 +1,4 @@
+cat << 'EOF' > requirements.txt
 fastapi>=0.115,<1
 starlette>=0.46,<1
 streamlit>=1.50,<2
@@ -8,4 +9,6 @@ python-multipart>=0.0.20,<1
 python-dotenv>=1,<2
 pydantic>=2.8,<3
 yfinance>=0.2.65,<2
+streamlit-autorefresh>=1.0.1
 pytest>=8,<10
+EOF
