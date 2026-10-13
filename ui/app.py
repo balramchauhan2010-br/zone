@@ -49,13 +49,17 @@ if "analysis_settings" not in st.session_state:
 if "scanner_payload" not in st.session_state:
     st.session_state.scanner_payload = None
 
-# Spot LTP के बाद Futures LTP, साथ में Volume Spike Ratio और Futures OI शामिल
 ORDERED_COLUMNS = [
     "Symbol", "Spot LTP", "Futures LTP", "Spot Change %", "Futures Change %",
     "Selected-Timeframe Volume", "Volume Spike Ratio", "Futures OI", "Futures OI Change",
     "Latest Verified Delivery %", "PCR", "CE Total OI", "PE Total OI",
     "Buildup Classification", "EMA 35 Signal", "EMA 100 Signal", "VWAP Signal",
     "Zone Signal", "Final AI Bias", "Data Source"
+]
+
+TIMEFRAME_OPTIONS = [
+    "3m", "5m", "10m", "15m", "30m", "75m",
+    "1h", "2h", "4h", "6h", "Daily", "Weekly", "Monthly"
 ]
 
 def _linkify_symbols(frame: pd.DataFrame) -> pd.DataFrame:
@@ -66,7 +70,6 @@ def _linkify_symbols(frame: pd.DataFrame) -> pd.DataFrame:
     return display
 
 def _fetch_stock_details(sym: str, tf_interval: str = "60m") -> dict:
-    """लाइव भाव, चयनित टाइमफ्रेम का वॉल्यूम स्पाइक रेश्यो, फ्यूचर्स OI और ऑप्शंस डेटा"""
     ticker_str = f"{sym}.NS"
     result = {
         "spot_ltp": None,
@@ -90,7 +93,7 @@ def _fetch_stock_details(sym: str, tf_interval: str = "60m") -> dict:
     try:
         t = yf.Ticker(ticker_str)
         
-        # 1. सिलेक्टेड टाइमफ्रेम पर वॉल्यूम और स्पाइक रेश्यो (Current Volume / 20-period SMA Volume)
+        # कैंडल हिस्ट्री और वॉल्यूम स्पाइक रेश्यो
         hist = t.history(period="1mo", interval=tf_interval)
         if not hist.empty:
             last_close = float(hist["Close"].iloc[-1])
@@ -98,24 +101,22 @@ def _fetch_stock_details(sym: str, tf_interval: str = "60m") -> dict:
             chg_pct = round(((last_close - prev_close) / prev_close) * 100, 2)
             cur_vol = int(hist["Volume"].iloc[-1])
             
-            # वॉल्यूम स्पाइक रेश्यो गणना
             lookback_vols = hist["Volume"].iloc[-21:-1]
             avg_vol = float(lookback_vols.mean()) if len(lookback_vols) > 0 else float(cur_vol)
             spike_ratio = round(cur_vol / avg_vol, 2) if avg_vol > 0 else 1.0
 
             result["spot_ltp"] = round(last_close, 2)
-            result["fut_ltp"] = round(last_close * 1.0025, 2)  # Futures basis प्रीमियम
+            result["fut_ltp"] = round(last_close * 1.0025, 2)
             result["spot_chg_pct"] = chg_pct
             result["fut_chg_pct"] = chg_pct
             result["tf_vol"] = cur_vol
             result["vol_spike_ratio"] = spike_ratio
             
-            # EMA और VWAP सिग्नल्स
             result["ema35"] = "+" if chg_pct > 0 else "-"
             result["ema100"] = "+" if chg_pct > 0 else "-"
             result["vwap"] = "+" if chg_pct > 0 else "-"
 
-        # 2. डिलीवरी डेटा ट्रेंड (पिछले 2 दिन से बढ़ता क्रम = 🟢 Green, अन्यथा 🔴 Red)
+        # डिलीवरी ट्रेंड (2 दिन की तुलना: 🟢 बढ़ता क्रम, 🔴 घटता क्रम)
         daily_hist = t.history(period="10d", interval="1d")
         if len(daily_hist) >= 3:
             v0 = daily_hist["Volume"].iloc[-1]
@@ -128,7 +129,7 @@ def _fetch_stock_details(sym: str, tf_interval: str = "60m") -> dict:
         else:
             result["delivery_display"] = "🟢 55.2% (स्थिर)"
 
-        # 3. ऑप्शन चेन एवं फ्यूचर्स OI (Current Month, ATM ± 5 स्ट्राइक CE & PE)
+        # ऑप्शंस और ओपन इंटरेस्ट (Current Expiry, ATM ±5 Strikes)
         expiries = t.options
         if expiries:
             opt = t.option_chain(expiries[0])
@@ -151,7 +152,6 @@ def _fetch_stock_details(sym: str, tf_interval: str = "60m") -> dict:
                 result["pe_oi"] = f"{pe_sum:,}"
                 result["pcr"] = f"{pcr_val:.2f}"
                 
-                # 4. Buildup Classification & Final Bias
                 oi_delta = pe_sum - ce_sum
                 result["oi_change"] = f"{'+' if oi_delta >= 0 else ''}{oi_delta:,}"
                 chg = result["spot_chg_pct"]
@@ -211,40 +211,22 @@ def _load_universe_data(timeframe: str = "60m") -> pd.DataFrame:
     return pd.DataFrame(enriched)
 
 def _render_nse_tab(settings: dict) -> None:
-    c1, c2, c3 = st.columns([1.5, 2.5, 3])
-    with c1:
-        if st.button("↻ Refresh scanner", type="primary"):
-            st.session_state.scanner_payload = None
-            st.rerun()
-    with c2:
-        # डिफ़ॉल्ट रूप से 1 hour (1h) सिलेक्टेड रहेगा
-        selected_tf = st.selectbox(
-            "Volume Spike & Indicator Timeframe:",
-            ["3m", "5m", "10m", "15m", "30m", "1h", "1d"],
-            index=5,
-            help="डिफ़ॉल्ट 1 Hour सेट है। आप 3m, 5m, 10m आदि बदल सकते हैं।"
-        )
-
-    # Yahoo Finance के संगत अंतराल (yfinance format)
+    # 1. TOP 5 STRONG BUY / SELL (ऊपर रखा गया)
+    # टाइमफ्रेम मैपिंग
+    selected_tf = st.session_state.get("selected_tf", "1h")
     tf_map = {
-        "3m": "2m", 
-        "5m": "5m", 
-        "10m": "15m", 
-        "15m": "15m", 
-        "30m": "30m", 
-        "1h": "60m", 
-        "1d": "1d"
+        "3m": "2m", "5m": "5m", "10m": "15m", "15m": "15m", "30m": "30m", "75m": "60m",
+        "1h": "60m", "2h": "60m", "4h": "60m", "6h": "60m", "Daily": "1d", "Weekly": "1wk", "Monthly": "1mo"
     }
     actual_interval = tf_map.get(selected_tf, "60m")
 
-    with st.spinner(f"लाइव डेटा और {selected_tf} वॉल्यूम स्पाइक लोड हो रहा है..."):
+    with st.spinner("लाइव मार्केट डेटा और ऑप्शंस स्ट्राइक लोड हो रही हैं..."):
         frame = _load_universe_data(timeframe=actual_interval)
 
     if frame.empty:
         st.info("मार्केट डेटा लोड नहीं हो सका।")
         return
 
-    # TOP 5 STRONG BUY & SELL
     buys = frame[frame["Final AI Bias"].isin(["BUY", "STRONG BUY"])].head(5)
     sells = frame[frame["Final AI Bias"].isin(["SELL", "STRONG SELL"])].head(5)
     top_cols = ["Symbol", "Spot LTP", "Futures LTP", "Spot Change %", "Volume Spike Ratio", "Futures OI", "PCR", "Buildup Classification", "Final AI Bias"]
@@ -277,8 +259,27 @@ def _render_nse_tab(settings: dict) -> None:
         else:
             st.info("वर्तमान में कोई Strong Sell सेटअप नहीं।")
 
-    st.markdown("### NSE ALL FUTURES — LIVE SCAN")
-    
+    # 2. आपके स्क्रीनशॉट के अनुसार नीचे बनाए गए बॉक्स में रिफ्रेश बटन और टाइमफ्रेम चयन
+    st.markdown("---")
+    c_title, c_refresh, c_tf = st.columns([3, 1.5, 2.5])
+    with c_title:
+        st.markdown("### NSE ALL FUTURES — LIVE SCAN")
+    with c_refresh:
+        if st.button("↻ Refresh scanner", type="primary", use_container_width=True):
+            st.session_state.scanner_payload = None
+            st.rerun()
+    with c_tf:
+        new_tf = st.selectbox(
+            "Timeframe:",
+            TIMEFRAME_OPTIONS,
+            index=TIMEFRAME_OPTIONS.index(selected_tf) if selected_tf in TIMEFRAME_OPTIONS else 6,
+            key="selected_tf",
+            label_visibility="collapsed"
+        )
+        if new_tf != selected_tf:
+            st.rerun()
+
+    # 3. मुख्य तालिका
     cols_to_render = [c for c in ORDERED_COLUMNS if c in frame.columns]
     if "Symbol" in cols_to_render:
         cols_to_render.append("_Chart URL")
