@@ -1,3 +1,6 @@
+# 10 मिनट (600 सेकंड) का ऑटोमैटिक रन
+if "last_refresh" not in st.session_state:
+    st.session_state.last_refresh = datetime.now()
 cat << 'EOF' > ui/app.py
 from __future__ import annotations
 
