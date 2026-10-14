@@ -6,7 +6,6 @@ from urllib.parse import quote as url_quote
 from zoneinfo import ZoneInfo
 import concurrent.futures
 import math
-import os
 
 import numpy as np
 import pandas as pd
@@ -30,7 +29,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# ----------------- UI STYLING -----------------
 st.markdown(
     """
     <style>
@@ -54,7 +52,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ----------------- CONFIG & TIMEFRAMES -----------------
 if "analysis_settings" not in st.session_state:
     st.session_state.analysis_settings = {
         "eod_high_buffer_pct": 10.0,
@@ -64,7 +61,7 @@ if "analysis_settings" not in st.session_state:
         "account_capital": 25000.0,
         "risk_pct": 0.5,
         "target_rr": 5.0,
-        "selected_tf": "Daily",  # डिफॉल्ट Day सेट किया गया है
+        "selected_tf": "Daily",
     }
 
 ALL_TIMEFRAMES = [
@@ -81,7 +78,6 @@ TV_INTERVAL_MAP = {
     "4h": "240", "6h": "360", "8h": "480", "Daily": "D", "Weekly": "W", "Monthly": "M"
 }
 
-# 26+ संपूर्ण ग्लोबल इंस्ट्रूमेंट्स की प्रमाणित सूची
 GLOBAL_INSTRUMENTS = [
     {"id": "DXY", "name": "US Dollar Index", "ticker": "DX-Y.NYB", "tv": "TVC:DXY"},
     {"id": "USDINR", "name": "USD / INR", "ticker": "USDINR=X", "tv": "FX_IDC:USDINR"},
@@ -112,10 +108,27 @@ GLOBAL_INSTRUMENTS = [
     {"id": "BTCUSD", "name": "Bitcoin / USD", "ticker": "BTC-USD", "tv": "BINANCE:BTCUSDT"},
 ]
 
-# ----------------- UNIVERSE FETCHER -----------------
+ORDERED_COLUMNS_TAB1 = [
+    "Symbol", "Spot LTP", "Futures LTP", "Spot Change %", "Futures Change %",
+    "Selected-Timeframe Volume", "Volume Spike Ratio", "Futures OI Change %",
+    "Latest Verified Delivery %", "PCR", "CE Total OI", "PE Total OI",
+    "Buildup Classification", "EMA 35 Signal", "EMA 100 Signal", "VWAP Signal",
+    "Zone Signal", "Final AI Bias", "Data Source"
+]
+
+# --- टेबल लिंकिंग फ़ंक्शन ---
+def _linkify_table(frame: pd.DataFrame) -> pd.DataFrame:
+    display = frame.copy()
+    if "Symbol" in display and "_Spot_Chart_URL" in display:
+        display["Symbol"] = display["_Spot_Chart_URL"].fillna("").astype(str)
+        display = display.drop(columns=["_Spot_Chart_URL"])
+    if "Futures LTP" in display and "_Fut_Chart_URL" in display:
+        display["Futures LTP"] = display["_Fut_Chart_URL"].fillna("").astype(str)
+        display = display.drop(columns=["_Fut_Chart_URL"])
+    return display
+
 @st.cache_data(ttl=3600)
 def _get_complete_nse_fno_symbols() -> list[str]:
-    """NSE के सभी सक्रिय फ्यूचर्स स्टॉक्स की डायनामिक लिस्ट (Dhan Scrip Master से)"""
     try:
         url = "https://images.dhan.co/api-data/api-scrip-master-detailed.csv"
         df = pd.read_csv(url, low_memory=False)
@@ -126,7 +139,6 @@ def _get_complete_nse_fno_symbols() -> list[str]:
             return sorted([str(s).strip().upper() for s in syms if "TEST" not in str(s)])
     except Exception:
         pass
-    # व्यापक बैकअप लिस्ट
     return [
         "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN", "BHARTIARTL", "ITC", "LT",
         "TATAMOTORS", "ADANIENT", "ADANIPORTS", "ADANIPOWER", "ADANIENSOL", "ADANIGREEN",
@@ -134,17 +146,12 @@ def _get_complete_nse_fno_symbols() -> list[str]:
         "WIPRO", "NTPC", "JSWSTEEL", "POWERGRID", "ONGC", "M&M", "COALINDIA", "BAJAJFINSV",
         "HCLTECH", "TECHM", "EICHERMOT", "DIVISLAB", "DRREDDY", "CIPLA", "APOLLOHOSP",
         "HINDUNILVR", "NESTLEIND", "BRITANNIA", "ASIANPAINT", "GRASIM", "ULTRACEMCO",
-        "SHREECEM", "AMBUJACEM", "INDUSINDBK", "BANKBARODA", "PNB", "CANBK", "FEDERALBNK",
-        "IDFCFIRSTB", "DLF", "GODREJPROP", "OBEROIRLTY", "VOLTAS", "HAVELLS", "POLYCAB",
-        "ASTRAL", "PIDILITIND", "BERGEPAINT", "TRENT", "BEL", "HAL", "BHEL", "SIEMENS",
-        "ABB", "CUMMINSIND", "VEDL", "HINDALCO", "NATIONALUM", "NMDC", "SAIL", "JINDALSTEL",
-        "TATACONSUM", "DABUR", "MARICO", "COLPAL", "MCDOWELL-N", "TVSMOTOR", "HEROMOTOCO",
-        "BALKRISIND", "MOTHERSON", "BOSCHLTD", "ABCAPITAL", "CHOLAFIN", "MUTHOOTFIN",
-        "MANAPPURAM", "PFC", "RECLTD", "L&TFH", "LICHSGFIN", "SBICARD", "PERSISTENT",
-        "COFORGE", "MPHASIS", "LTTS", "LTIM", "DIXON", "NAUKRI", "ZOMATO", "PAYTM"
+        "AMBUJACEM", "INDUSINDBK", "BANKBARODA", "PNB", "CANBK", "FEDERALBNK",
+        "IDFCFIRSTB", "DLF", "GODREJPROP", "ASTRAL", "TRENT", "BEL", "HAL", "BHEL",
+        "SIEMENS", "ABB", "VEDL", "HINDALCO", "NMDC", "SAIL", "JINDALSTEL", "TATACONSUM",
+        "ABCAPITAL", "CHOLAFIN", "PFC", "RECLTD", "PERSISTENT", "COFORGE", "LTIM"
     ]
 
-# ----------------- MACRO & DATA FETCHER -----------------
 @st.cache_data(ttl=60)
 def _get_global_market_macro() -> dict:
     macro = {"bullish_bias": 0, "summary": []}
@@ -181,7 +188,7 @@ def _fetch_single_stock(sym: str, tf_interval: str, macro_score: int, settings: 
         "symbol": sym, "spot_ltp": None, "fut_ltp": None, "spot_chg_pct": 0.0,
         "fut_chg_pct": 0.0, "tf_vol": 0, "vol_spike_ratio": 1.0, "oi_change_pct": 0.0,
         "delivery_display": "—", "pcr": "—", "ce_oi": "—", "pe_oi": "—",
-        "buildup": "NEUTRAL", "bias": "NO TRADE", "ema35": "+", "ema100": "+",
+        "buildup": "Neutral", "bias": "NO TRADE", "ema35": "+", "ema100": "+",
         "vwap": "+", "zone_status": "NONE", "highlight_info": ""
     }
     try:
@@ -204,7 +211,6 @@ def _fetch_single_stock(sym: str, tf_interval: str, macro_score: int, settings: 
             result["tf_vol"] = cur_vol
             result["vol_spike_ratio"] = spike_ratio
 
-            # EMA & VWAP Crossover Signals
             if len(hist) >= 35:
                 ema35 = hist["Close"].ewm(span=35, adjust=False).mean().iloc[-1]
                 result["ema35"] = "+" if last_close > ema35 else "-"
@@ -212,7 +218,6 @@ def _fetch_single_stock(sym: str, tf_interval: str, macro_score: int, settings: 
                 ema100 = hist["Close"].ewm(span=100, adjust=False).mean().iloc[-1]
                 result["ema100"] = "+" if last_close > ema100 else "-"
 
-            # Timeframe highlight info for Volume Spike & EMA
             hl_tags = []
             if spike_ratio >= 2.0:
                 hl_tags.append(f"Vol Spike ({spike_ratio}x @ {tf_interval})")
@@ -222,7 +227,6 @@ def _fetch_single_stock(sym: str, tf_interval: str, macro_score: int, settings: 
                 hl_tags.append(f"EMA Bear Cross ({tf_interval})")
             result["highlight_info"] = " | ".join(hl_tags)
 
-            # Zone Core Scan
             df_zone = hist[["Open", "High", "Low", "Close", "Volume"]].copy()
             df_zone.columns = ["open", "high", "low", "close", "volume"]
             z_cfg = {
@@ -239,7 +243,6 @@ def _fetch_single_stock(sym: str, tf_interval: str, macro_score: int, settings: 
                 top_z = act_zones[-1]
                 result["zone_status"] = f"{top_z.state} {('DEMAND' if top_z.isDemand else 'SUPPLY')}"
 
-        # Delivery Analysis
         daily_hist = t.history(period="10d", interval="1d")
         if len(daily_hist) >= 3:
             v0, v1, v2 = daily_hist["Volume"].iloc[-1], daily_hist["Volume"].iloc[-2], daily_hist["Volume"].iloc[-3]
@@ -247,7 +250,6 @@ def _fetch_single_stock(sym: str, tf_interval: str, macro_score: int, settings: 
         else:
             result["delivery_display"] = "55.2% (स्थिर)"
 
-        # Live Option Chain & Real-time OI Analysis
         expiries = t.options
         if expiries:
             opt = t.option_chain(expiries[0])
@@ -270,19 +272,17 @@ def _fetch_single_stock(sym: str, tf_interval: str, macro_score: int, settings: 
                 result["pe_oi"] = f"{pe_sum:,}"
                 result["pcr"] = f"{pcr_val:.2f}"
 
-                # 4-Way Buildup Logic with Sentiment Colors
                 if chg > 0.3 and oi_chg_pct > 0:
                     result["buildup"] = "Long Buildup"
                 elif chg < -0.3 and oi_chg_pct > 0:
                     result["buildup"] = "Short Buildup"
-                elif chg > 0.3 and oi_chg_pct <= 0:
+                elif chg > 0 and oi_chg_pct <= 0:
                     result["buildup"] = "Short Covering"
                 elif chg < -0.3 and oi_chg_pct <= 0:
                     result["buildup"] = "Long Unwinding"
                 else:
                     result["buildup"] = "Neutral"
 
-                # Multi-Factor AI Institutional Bias
                 total_bias_score = (2 if chg > 0.5 else (-2 if chg < -0.5 else 0)) + \
                                    (1 if pcr_val > 1.15 else (-1 if pcr_val < 0.8 else 0)) + \
                                    (2 if "DEMAND" in result["zone_status"] else (-2 if "SUPPLY" in result["zone_status"] else 0)) + \
@@ -321,7 +321,6 @@ def _render_nse_tab(settings: dict) -> None:
 
     symbols = _get_complete_nse_fno_symbols()
 
-    # Filter state for Advances / Declines
     breadth_filter = st.session_state.get("breadth_filter", "ALL")
     if breadth_filter != "ALL":
         c_clear, _ = st.columns([2, 5])
@@ -332,8 +331,7 @@ def _render_nse_tab(settings: dict) -> None:
 
     with st.spinner("सभी NSE Futures स्टॉक्स, लाइव भाव, ऑप्शंस व AI Bias लोड हो रहा है..."):
         enriched = []
-        # Parallel execution to keep latency minimal
-        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             future_map = {executor.submit(_fetch_single_stock, sym, actual_interval, macro_score, settings): sym for sym in symbols}
             for f in concurrent.futures.as_completed(future_map):
                 d = f.result()
@@ -373,7 +371,6 @@ def _render_nse_tab(settings: dict) -> None:
         st.info("डेटा लोड नहीं हो सका।")
         return
 
-    # Filter if user clicked Advances / Declines in Tab 4
     if breadth_filter == "ADVANCES":
         frame = frame[frame["Spot Change %"] > 0]
     elif breadth_filter == "DECLINES":
@@ -413,7 +410,6 @@ def _render_nse_tab(settings: dict) -> None:
             st.info("वर्तमान में कोई Strong Sell सेटअप नहीं।")
 
     st.markdown("---")
-    # Title & Controls
     c_title, c_refresh, c_tf = st.columns([3, 1.5, 2.5])
     with c_title:
         st.markdown(f"### NSE ALL FUTURES — LIVE SCAN ({len(frame)} स्टॉक्स)")
@@ -441,7 +437,6 @@ def _render_nse_tab(settings: dict) -> None:
 
     display = _linkify_table(frame[cols_to_render + hidden_urls].copy())
 
-    # Styling: Price Up = Green, Price Down = Red, Buildup Sentiment Styling
     def highlight_row_styling(row):
         val = row.get("Spot Change %", 0)
         p_color = '#00e676' if val >= 0 else '#ff5252'
@@ -500,7 +495,6 @@ def _scan_nearest_zone_multi_tf(sym: str, settings: dict) -> dict | None:
         target_rr = float(settings.get("target_rr", 5.0))
         distal_buf_pct = float(settings.get("distal_buffer_pct", 0.5))
 
-        # Scan across all user-specified timeframes
         scan_tfs = ["15m", "30m", "75m", "1h", "2h", "4h", "6h", "8h", "Daily", "Weekly", "Monthly"]
         closest_zone = None
         min_distance = float("inf")
@@ -546,8 +540,6 @@ def _scan_nearest_zone_multi_tf(sym: str, settings: dict) -> dict | None:
                         quantity = 1
 
                     tp_price = round(prox + (per_unit_risk * target_rr) if z.isDemand else prox - (per_unit_risk * target_rr), 2)
-
-                    # Dynamic TradingView Interval Parameter
                     tv_interval = TV_INTERVAL_MAP.get(tf, "60")
                     chart_url = f"https://in.tradingview.com/chart/?symbol={url_quote('NSE:' + sym, safe='')}&interval={tv_interval}"
 
@@ -582,7 +574,7 @@ def _render_zone_tab(settings: dict) -> None:
     if run_scan or "last_zone_multi_results" not in st.session_state:
         with st.spinner("सभी NSE Futures स्टॉक्स के सभी टाइमफ्रेम स्कैन हो रहे हैं..."):
             all_zones = []
-            with concurrent.futures.ThreadPoolExecutor(max_workers=12) as ex:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
                 futures = [ex.submit(_scan_nearest_zone_multi_tf, s, settings) for s in symbols]
                 for f in concurrent.futures.as_completed(futures):
                     res = f.result()
@@ -736,10 +728,9 @@ def _render_global_zone_tab(settings: dict) -> None:
     else:
         st.info("ग्लोबल मार्केट्स में वर्तमान में कोई सक्रिय Fresh/Tested ज़ोन नहीं मिला।")
 
-# ----------------- TAB 4: NEWS & EVENTS (STOCKEDGE FII/DII & REAL BREADTH) -----------------
+# ----------------- TAB 4: NEWS & EVENTS -----------------
 @st.cache_data(ttl=180)
 def _fetch_stockedge_fii_dii() -> dict:
-    """StockEdge से प्रमाणित FII / DII डेटा"""
     default_data = {
         "fii_cash": "+₹1,425.60 Cr",
         "dii_cash": "+₹890.30 Cr",
@@ -748,7 +739,6 @@ def _fetch_stockedge_fii_dii() -> dict:
         "source": "StockEdge Real-Time Feed"
     }
     try:
-        # StockEdge API endpoint
         url = "https://web.stockedge.com/api/data/fii-dii-activity"
         headers = {"User-Agent": "Mozilla/5.0"}
         r = httpx.get(url, headers=headers, timeout=5.0)
@@ -766,7 +756,6 @@ def _fetch_stockedge_fii_dii() -> dict:
 def _render_news_events_tab() -> None:
     st.markdown("### 📰 GLOBAL STRIP & INSTITUTIONAL EVENTS")
 
-    # Accurate Tickers & Values
     strip_items = [
         {"name": "GIFT NIFTY", "ticker": "^NSEI", "tv": "NSE:NIFTY1!"},
         {"name": "NIFTY 50", "ticker": "^NSEI", "tv": "NSE:NIFTY"},
@@ -809,7 +798,6 @@ def _render_news_events_tab() -> None:
 
     st.markdown("---")
 
-    # Real Market Breadth from Tab 1
     master_frame = st.session_state.get("master_nse_frame")
     if master_frame is not None and not master_frame.empty:
         total_stocks = len(master_frame)
@@ -850,7 +838,6 @@ def _render_news_events_tab() -> None:
 
     with e2:
         st.markdown("#### 📢 ताज़ा NSE Corporate Events & Announcements")
-        # Today's current live announcements only
         st.markdown("""
         * **TCS:** Q2 परिणाम के बाद डिविडेंड रिकॉर्ड तिथि घोषित।
         * **RELIANCE:** तेल एवं पेट्रोकेमिकल विस्तार पर नई घोषणा।
