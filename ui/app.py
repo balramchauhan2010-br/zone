@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import sys
 import json
 from datetime import datetime
 from urllib.parse import quote as url_quote
@@ -54,6 +56,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# ----------------- CONFIG & TIMEFRAMES -----------------
 if "analysis_settings" not in st.session_state:
     st.session_state.analysis_settings = {
         "eod_high_buffer_pct": 10.0,
@@ -133,8 +136,18 @@ def _linkify_table(frame: pd.DataFrame) -> pd.DataFrame:
         display = display.drop(columns=["_Bias_Link_URL"])
     return display
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=3600)
 def _get_complete_nse_fno_symbols() -> list[str]:
+    try:
+        url = "https://images.dhan.co/api-data/api-scrip-master-detailed.csv"
+        df = pd.read_csv(url, low_memory=False)
+        df.columns = [str(c).strip().upper() for c in df.columns]
+        fno = df[(df["EXCH_ID"] == "NSE") & (df["SEGMENT"] == "D") & (df["INSTRUMENT"] == "FUTSTK")]
+        syms = fno["UNDERLYING_SYMBOL"].dropna().unique().tolist()
+        if len(syms) > 50:
+            return sorted([str(s).strip().upper() for s in syms if "TEST" not in str(s)])
+    except Exception:
+        pass
     return [
         "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN", "BHARTIARTL", "ITC", "LT",
         "TATAMOTORS", "ADANIENT", "ADANIPORTS", "ADANIPOWER", "ADANIENSOL", "ADANIGREEN",
@@ -149,7 +162,7 @@ def _get_complete_nse_fno_symbols() -> list[str]:
         "TATAELXSI", "LICHSGFIN", "SHRIRAMFIN", "PAGEIND", "POLYCAB", "SBILIFE", "PGEL", "SHREECEM", "NAUKRI"
     ]
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=120)
 def _get_global_market_macro() -> dict:
     macro = {"bullish_bias": 0, "summary": []}
     tickers_to_check = {
@@ -179,8 +192,7 @@ def _get_global_market_macro() -> dict:
         pass
     return macro
 
-# ----------------- OPTIMIZED FAST BATCH LOADER -----------------
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=90)
 def _load_fast_batch_market_data(symbols: list[str], tf_interval: str, settings: dict) -> pd.DataFrame:
     macro_info = _get_global_market_macro()
     macro_score = macro_info.get("bullish_bias", 0)
@@ -492,6 +504,7 @@ def _render_nse_tab(settings: dict) -> None:
         "Futures OI Change %": st.column_config.NumberColumn("Futures OI Change %", format="%.2f%%"),
         "Selected-Timeframe Volume": st.column_config.NumberColumn("Selected-Timeframe Volume", format="localized"),
         "Volume Spike Ratio": st.column_config.NumberColumn("Volume Spike Ratio", format="%.2fx"),
+        "Final AI Bias": st.column_config.TextColumn("Final AI Bias", help="संस्थागत निर्णय (BUY / SELL)"),
         "Live Signals Highlight": st.column_config.TextColumn("Live Signals Highlight", help="वॉल्यूम स्पाइक या EMA क्रॉसओवर अलर्ट"),
     }
     st.dataframe(styled, column_config=column_config, width="stretch", hide_index=True, height=540)
@@ -773,7 +786,7 @@ def _render_global_zone_tab(settings: dict) -> None:
     else:
         st.info("ग्लोबल मार्केट्स में वर्तमान में कोई सक्रिय Fresh/Tested ज़ोन नहीं मिला।")
 
-# ----------------- TAB 4: NEWS & EVENTS (MULTI-LAYER VERIFIED FII/DII) -----------------
+# ----------------- TAB 4: NEWS & EVENTS -----------------
 @st.cache_data(ttl=180)
 def _fetch_verified_fii_dii() -> dict:
     default_data = {
@@ -981,8 +994,11 @@ def _render_settings_tab(settings: dict) -> None:
 
     st.markdown("---")
     st.markdown("#### 🔌 Active APIs, Data Providers & GitHub Repositories Status")
-    dhan_key = os.getenv("DHAN_CLIENT_ID", "")
-    gemini_key = os.getenv("GEMINI_API_KEY", "")
+    
+    # Safe os.getenv check
+    dhan_key = os.getenv("DHAN_CLIENT_ID", "") if "os" in globals() else ""
+    gemini_key = os.getenv("GEMINI_API_KEY", "") if "os" in globals() else ""
+    
     p1, p2, p3 = st.columns(3)
     with p1:
         st.write(f"**DhanHQ API:** {'🟢 Connected (Live F&O)' if dhan_key else '🟡 Fallback Mode (Public Master Active)'}")
