@@ -42,11 +42,11 @@ st.markdown(
     div[data-testid="stDataFrame"] { border: 1px solid #1a3858; border-radius: 6px; }
     .stButton button { border: 1px solid #315273; background: #112744; color: #edf5ff; border-radius: 5px; }
     .stButton button:hover { border-color: #55a6ec; color: white; }
-    .strip-card { background: #0b1a2d; border: 1px solid #18314d; padding: 8px 12px; border-radius: 6px; text-align: center; }
-    .strip-title { color: #8ea5c0; font-size: 0.72rem; margin-bottom: 2px; }
-    .strip-val { font-size: 0.95rem; font-weight: bold; color: #f1f6ff; }
-    .pos-txt { color: #00e676; font-size: 0.78rem; font-weight: bold; }
-    .neg-txt { color: #ff5252; font-size: 0.78rem; font-weight: bold; }
+    .strip-card { background: #0b1a2d; border: 1px solid #18314d; padding: 6px 10px; border-radius: 6px; text-align: center; }
+    .strip-title { color: #8ea5c0; font-size: 0.70rem; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .strip-val { font-size: 0.90rem; font-weight: bold; color: #f1f6ff; }
+    .pos-txt { color: #00e676; font-size: 0.75rem; font-weight: bold; }
+    .neg-txt { color: #ff5252; font-size: 0.75rem; font-weight: bold; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -57,6 +57,7 @@ if "analysis_settings" not in st.session_state:
     st.session_state.analysis_settings = {
         "eod_high_buffer_pct": 10.0,
         "eod_low_buffer_pct": 10.0,
+        "distal_buffer_pct": 0.5,
         "use_eod_range": True,
         "account_capital": 25000.0,
         "risk_pct": 0.5,
@@ -66,7 +67,6 @@ if "analysis_settings" not in st.session_state:
 if "scanner_payload" not in st.session_state:
     st.session_state.scanner_payload = None
 
-# Tab 1: Futures OI कॉलम हटाकर Futures OI Change % शामिल किया गया
 ORDERED_COLUMNS_TAB1 = [
     "Symbol", "Spot LTP", "Futures LTP", "Spot Change %", "Futures Change %",
     "Selected-Timeframe Volume", "Volume Spike Ratio", "Futures OI Change %",
@@ -191,7 +191,7 @@ def _fetch_stock_details(sym: str, tf_interval: str, macro_score: int, settings:
             result["ema100"] = "+" if chg_pct > 0 else "-"
             result["vwap"] = "+" if chg_pct > 0 else "-"
 
-            # Zone Core Scan on Current Stock
+            # Zone Core Scan
             df_zone = hist[["Open", "High", "Low", "Close", "Volume"]].copy()
             df_zone.columns = ["open", "high", "low", "close", "volume"]
             z_cfg = {
@@ -208,7 +208,7 @@ def _fetch_stock_details(sym: str, tf_interval: str, macro_score: int, settings:
                 top_z = act_zones[-1]
                 result["zone_status"] = f"{top_z.state} {('DEMAND' if top_z.isDemand else 'SUPPLY')}"
 
-        # Delivery Analysis (2 Sessions comparison)
+        # Delivery Analysis
         daily_hist = t.history(period="10d", interval="1d")
         if len(daily_hist) >= 3:
             v0, v1, v2 = daily_hist["Volume"].iloc[-1], daily_hist["Volume"].iloc[-2], daily_hist["Volume"].iloc[-3]
@@ -216,7 +216,7 @@ def _fetch_stock_details(sym: str, tf_interval: str, macro_score: int, settings:
         else:
             result["delivery_display"] = "🟢 55.2% (स्थिर)"
 
-        # Option Chain & Real-time OI Analysis (ATM +- 5 strikes)
+        # Option Chain & Real-time OI Analysis
         expiries = t.options
         if expiries:
             opt = t.option_chain(expiries[0])
@@ -232,7 +232,7 @@ def _fetch_stock_details(sym: str, tf_interval: str, macro_score: int, settings:
                 pcr_val = round(pe_sum / ce_sum, 2) if ce_sum > 0 else 1.0
 
                 chg = result["spot_chg_pct"]
-                oi_chg_pct = round(chg * 1.35, 2)  # Current OI Change %
+                oi_chg_pct = round(chg * 1.35, 2)
 
                 result["oi_change_pct"] = oi_chg_pct
                 result["ce_oi"] = f"{ce_sum:,}"
@@ -329,7 +329,6 @@ def _render_nse_tab(settings: dict) -> None:
         st.info("डेटा लोड नहीं हो सका।")
         return
 
-    # TOP 5 STRONG BUY / SELL
     buys = frame[frame["Final AI Bias"].isin(["BUY", "STRONG BUY"])].head(5)
     sells = frame[frame["Final AI Bias"].isin(["SELL", "STRONG SELL"])].head(5)
     top_cols = ["Symbol", "Spot LTP", "Futures LTP", "Spot Change %", "Volume Spike Ratio", "Futures OI Change %", "PCR", "Buildup Classification", "Final AI Bias"]
@@ -399,13 +398,11 @@ def _render_nse_tab(settings: dict) -> None:
     }
     st.dataframe(display, column_config=column_config, width="stretch", hide_index=True, height=540)
 
-# ----------------- TAB 2: ZONE NAVIGATION TAB (MULTI-TIMEFRAME SCAN) -----------------
+# ----------------- TAB 2: ZONE NAVIGATION TAB (MULTI-TIMEFRAME NEAREST) -----------------
 def _scan_nearest_zone_multi_tf(sym: str, settings: dict) -> dict | None:
-    """हस्तलिखित स्केच अनुसार: सभी टाइमफ्रेम को स्कैन कर सबसे नजदीकी एक्टिव ज़ोन निकालना"""
     ticker_str = f"{sym}.NS"
     try:
         t = yf.Ticker(ticker_str)
-        # 1 घंटे की कैंडल से वर्तमान LTP
         base_df = t.history(period="5d", interval="60m")
         if base_df.empty:
             return None
@@ -415,8 +412,8 @@ def _scan_nearest_zone_multi_tf(sym: str, settings: dict) -> dict | None:
         risk_pct = float(settings.get("risk_pct", 0.5))
         risk_budget = capital * (risk_pct / 100.0)
         target_rr = float(settings.get("target_rr", 5.0))
+        distal_buf_pct = float(settings.get("distal_buffer_pct", 0.5))
 
-        # प्रमुख टाइमफ्रेम जिन्हें एक साथ स्कैन किया जाएगा
         scan_tfs = ["15m", "30m", "1h", "4h", "Daily", "Weekly"]
         closest_zone = None
         min_distance = float("inf")
@@ -446,13 +443,19 @@ def _scan_nearest_zone_multi_tf(sym: str, settings: dict) -> dict | None:
             for z in active_zones:
                 prox = float(z.proxVal)
                 dist = float(z.distVal)
+
+                # Distal Buffer Adjustment
+                if z.isDemand:
+                    adjusted_dist = dist * (1.0 - distal_buf_pct / 100.0)
+                else:
+                    adjusted_dist = dist * (1.0 + distal_buf_pct / 100.0)
+
                 distance = abs(current_ltp - prox)
 
                 if distance < min_distance:
                     min_distance = distance
-                    # रिस्क और क्वांटिटी का परिकलन
-                    per_unit_risk = abs(prox - dist)
-                    quantity = math.floor(risk_budget / per_unit_risk) if per_unit_risk > 0 else 0
+                    per_unit_risk = abs(prox - adjusted_dist)
+                    quantity = math.floor(risk_budget / per_unit_risk) if per_unit_risk > 0 else 1
                     if quantity <= 0:
                         quantity = 1
 
@@ -465,12 +468,11 @@ def _scan_nearest_zone_multi_tf(sym: str, settings: dict) -> dict | None:
                         "LTP": current_ltp,
                         "demand/Supply": "Demand" if z.isDemand else "Supply",
                         "Near Timeframe": tf,
-                        "State": z.state,
                         "Entry Price": round(prox, 2),
-                        "Distal Stoploss": round(dist, 2),
+                        "Distal Stoploss": round(adjusted_dist, 2),
                         "Target Price": tp_price,
                         "Quantity": quantity,
-                        "Distance": round(distance, 2)
+                        "State": z.state,
                     }
 
         return closest_zone
@@ -479,9 +481,9 @@ def _scan_nearest_zone_multi_tf(sym: str, settings: dict) -> dict | None:
 
 def _render_zone_tab(settings: dict) -> None:
     st.markdown("### 🎯 ZONE SCANNER — ALL NSE FUTURES (NEAREST ZONE ACROSS ALL TIMEFRAMES)")
-    st.caption("हस्तलिखित स्केच अनुसार: प्रत्येक स्टॉक के सभी टाइमफ्रेम (15m, 30m, 1h, 4h, Daily, Weekly) को स्कैन कर सबसे नजदीकी एक्टिव ज़ोन, एंट्री, स्टॉपलॉस और कैपिटल आधारित क्वांटिटी।")
+    st.caption("हस्तलिखित स्केच अनुसार: सभी टाइमफ्रेम (15m, 30m, 1h, 4h, Daily, Weekly) का स्वतः स्कैन, नजदीकी ज़ोन, एंट्री, डिस्टल स्टॉपलॉस, टार्गेट और कैपिटल आधारित क्वांटिटी।")
 
-    c1, c2 = st.columns([1.5, 4])
+    c1, c2 = st.columns([2, 4])
     with c1:
         run_scan = st.button("🚀 Start Multi-Timeframe Zone Scan", type="primary", use_container_width=True)
 
@@ -490,8 +492,8 @@ def _render_zone_tab(settings: dict) -> None:
                     "JSWSTEEL", "POWERGRID", "ONGC", "M&M", "COALINDIA"]
 
     if run_scan or "last_zone_multi_results" in st.session_state:
-        if run_scan:
-            with st.spinner("सभी NSE Futures के सभी टाइमफ्रेम का नजदीकी ज़ोन स्कैन हो रहा है..."):
+        if run_scan or "last_zone_multi_results" not in st.session_state:
+            with st.spinner("सभी टाइमफ्रेम के नजदीकी ज़ोन स्कैन हो रहे हैं..."):
                 all_zones = []
                 with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
                     futures = [ex.submit(_scan_nearest_zone_multi_tf, s, settings) for s in test_symbols]
@@ -506,82 +508,122 @@ def _render_zone_tab(settings: dict) -> None:
             df_res = pd.DataFrame(zone_data)
             df_disp = df_res.copy()
             df_disp["Symbols"] = df_disp["_Chart_URL"].fillna("").astype(str)
-            df_disp = df_disp.drop(columns=["_Chart_URL", "Distance"])
+            df_disp = df_disp.drop(columns=["_Chart_URL"])
 
-            # हस्तलिखित स्केच का सटीक कॉलम ऑर्डर
-            handwritten_cols = ["Symbols", "LTP", "demand/Supply", "Near Timeframe", "State", "Entry Price", "Distal Stoploss", "Target Price", "Quantity"]
+            handwritten_cols = ["Symbols", "LTP", "demand/Supply", "Near Timeframe", "Entry Price", "Distal Stoploss", "Target Price", "Quantity", "State"]
             df_final = df_disp[[c for c in handwritten_cols if c in df_disp.columns]]
 
             st.dataframe(df_final, column_config={
                 "Symbols": st.column_config.LinkColumn("Symbols", display_text=r".*symbol=NSE%3A([^&#]+).*"),
                 "LTP": st.column_config.NumberColumn("LTP", format="₹%.2f"),
-                "Entry Price": st.column_config.NumberColumn("Entry Price (Proximal)", format="₹%.2f"),
+                "Entry Price": st.column_config.NumberColumn("Entry Price", format="₹%.2f"),
                 "Distal Stoploss": st.column_config.NumberColumn("Distal Stoploss", format="₹%.2f"),
                 "Target Price": st.column_config.NumberColumn("Target Price", format="₹%.2f"),
-                "Quantity": st.column_config.NumberColumn("Quantity (Capital According)", format="%d"),
+                "Quantity": st.column_config.NumberColumn("Quantity", format="%d"),
             }, hide_index=True, use_container_width=True, height=540)
         else:
-            st.info("वर्तमान में चयनित स्टॉक्स में कोई एक्टिव Fresh/Tested ज़ोन नहीं मिला।")
+            st.info("वर्तमान में चयनित स्टॉक्स में कोई सक्रिय Fresh/Tested ज़ोन नहीं मिला।")
 
-# ----------------- TAB 3: GLOBAL ZONE (26+ INSTRUMENTS) -----------------
+# ----------------- TAB 3: GLOBAL ZONE (MULTI-TIMEFRAME NEAREST) -----------------
+def _scan_global_nearest_zone(item: dict, settings: dict) -> dict | None:
+    try:
+        t = yf.Ticker(item["ticker"])
+        base_df = t.history(period="5d", interval="60m")
+        if base_df.empty:
+            return None
+        current_ltp = round(float(base_df["Close"].iloc[-1]), 4)
+
+        target_rr = float(settings.get("target_rr", 5.0))
+        distal_buf_pct = float(settings.get("distal_buffer_pct", 0.5))
+
+        scan_tfs = ["30m", "1h", "4h", "Daily", "Weekly"]
+        closest_zone = None
+        min_distance = float("inf")
+
+        for tf in scan_tfs:
+            interval = YF_TF_MAP.get(tf, "60m")
+            period = "1mo" if tf in ["30m", "1h"] else ("6mo" if tf == "4h" else "2y")
+            df = t.history(period=period, interval=interval)
+            if df.empty or len(df) < 15:
+                continue
+
+            df_zone = df[["Open", "High", "Low", "Close", "Volume"]].copy()
+            df_zone.columns = ["open", "high", "low", "close", "volume"]
+
+            z_cfg = {
+                "eodHighBufferPct": float(settings.get("eod_high_buffer_pct", 10.0)),
+                "eodLowBufferPct": float(settings.get("eod_low_buffer_pct", 10.0)),
+                "useEodRange": False,
+                "accountCapital": 25000.0, "riskPct": 0.5, "targetRR": target_rr
+            }
+
+            zones = scan_zones(df_zone, params=z_cfg, tf=tf)
+            active_zones = latest_active_zones(zones)
+
+            for z in active_zones:
+                prox = float(z.proxVal)
+                dist = float(z.distVal)
+
+                if z.isDemand:
+                    adjusted_dist = dist * (1.0 - distal_buf_pct / 100.0)
+                else:
+                    adjusted_dist = dist * (1.0 + distal_buf_pct / 100.0)
+
+                distance = abs(current_ltp - prox)
+
+                if distance < min_distance:
+                    min_distance = distance
+                    per_unit_risk = abs(prox - adjusted_dist)
+                    tp_price = round(prox + (per_unit_risk * target_rr) if z.isDemand else prox - (per_unit_risk * target_rr), 4)
+
+                    closest_zone = {
+                        "Symbol": item["id"],
+                        "LTP": current_ltp,
+                        "Demand/Supply": "Demand" if z.isDemand else "Supply",
+                        "Near Timeframe": tf,
+                        "Entry Price": round(prox, 4),
+                        "Distal Stoploss": round(adjusted_dist, 4),
+                        "Target Price": tp_price,
+                        "State": z.state,
+                    }
+
+        return closest_zone
+    except Exception:
+        return None
+
 def _render_global_zone_tab(settings: dict) -> None:
-    st.markdown("### 🌐 GLOBAL INSTRUMENTS — ZONE SCANNER (zone_core.py)")
-    st.caption("DXY, US10Y, Gold, Crude, US30, S&P 500, DAX, GIFT NIFTY आदि पर समान ज़ोन कोर इंजन द्वारा स्कैनिंग")
+    st.markdown("### 🌐 GLOBAL INSTRUMENTS — MULTI-TIMEFRAME ZONE SCANNER")
+    st.caption("DXY, US10Y, Gold, Crude, US30, S&P 500, DAX, GIFT NIFTY आदि पर सभी टाइमफ्रेम का स्वतः नजदीकी ज़ोन स्कैन।")
 
     c1, c2 = st.columns([2, 4])
     with c1:
-        gtf = st.selectbox("Global Zone Timeframe:", ["15m", "30m", "1h", "4h", "Daily", "Weekly"], index=2, key="gz_tf")
-    with c2:
-        start_gz = st.button("🚀 Scan Global Zones", type="primary")
+        start_gz = st.button("🚀 Scan All Global Zones", type="primary", use_container_width=True)
 
     if start_gz or "global_zone_results" in st.session_state:
-        if start_gz:
-            with st.spinner("ग्लोबल इंस्ट्रूमेंट्स पर ज़ोन स्कैन हो रहा है..."):
+        if start_gz or "global_zone_results" not in st.session_state:
+            with st.spinner("ग्लोबल इंस्ट्रूमेंट्स के सभी टाइमफ्रेम के नजदीकी ज़ोन स्कैन हो रहे हैं..."):
                 gz_rows = []
-                interval = YF_TF_MAP.get(gtf, "60m")
-                for item in GLOBAL_INSTRUMENTS[:18]:
-                    try:
-                        t = yf.Ticker(item["ticker"])
-                        df = t.history(period="3mo", interval=interval)
-                        if not df.empty and len(df) >= 20:
-                            df_zone = df[["Open", "High", "Low", "Close", "Volume"]].copy()
-                            df_zone.columns = ["open", "high", "low", "close", "volume"]
-                            z_cfg = {
-                                "eodHighBufferPct": float(settings.get("eod_high_buffer_pct", 10.0)),
-                                "eodLowBufferPct": float(settings.get("eod_low_buffer_pct", 10.0)),
-                                "useEodRange": False,
-                                "accountCapital": 25000.0, "riskPct": 0.5, "targetRR": 5.0
-                            }
-                            zones = scan_zones(df_zone, params=z_cfg, tf=gtf)
-                            active = latest_active_zones(zones)
-                            cur_p = float(df_zone["close"].iloc[-1])
-                            for z in active:
-                                gz_rows.append({
-                                    "Instrument": item["id"],
-                                    "Asset Name": item["name"],
-                                    "Timeframe": gtf,
-                                    "Type": "DEMAND" if z.isDemand else "SUPPLY",
-                                    "State": z.state,
-                                    "Pattern": z.patternType,
-                                    "Current Price": round(cur_p, 4),
-                                    "Proximal": round(float(z.proxVal), 4),
-                                    "Distal": round(float(z.distVal), 4),
-                                    "Score": int(z.densityScore),
-                                })
-                    except Exception:
-                        pass
+                with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+                    futures = [ex.submit(_scan_global_nearest_zone, item, settings) for item in GLOBAL_INSTRUMENTS[:20]]
+                    for f in concurrent.futures.as_completed(futures):
+                        res = f.result()
+                        if res:
+                            gz_rows.append(res)
                 st.session_state["global_zone_results"] = gz_rows
 
         res = st.session_state.get("global_zone_results", [])
         if res:
-            st.dataframe(pd.DataFrame(res), hide_index=True, use_container_width=True, height=520)
+            df_gz = pd.DataFrame(res)
+            g_cols = ["Symbol", "LTP", "Demand/Supply", "Near Timeframe", "Entry Price", "Distal Stoploss", "Target Price", "State"]
+            st.dataframe(df_gz[[c for c in g_cols if c in df_gz.columns]], hide_index=True, use_container_width=True, height=540)
         else:
             st.info("ग्लोबल मार्केट्स में वर्तमान में कोई सक्रिय Fresh/Tested ज़ोन नहीं मिला।")
 
-# ----------------- TAB 4: NEWS & EVENTS -----------------
+# ----------------- TAB 4: NEWS & EVENTS (TLT CARD ADDED) -----------------
 def _render_news_events_tab() -> None:
     st.markdown("### 📰 GLOBAL STRIP & INSTITUTIONAL EVENTS")
 
+    # TLT (iShares 20+ Year Treasury Bond ETF) कार्ड शामिल किया गया
     strip_items = [
         {"name": "GIFT NIFTY", "ticker": "^NSEI"},
         {"name": "NIFTY 50", "ticker": "^NSEI"},
@@ -591,11 +633,12 @@ def _render_news_events_tab() -> None:
         {"name": "US 10Y Yield", "ticker": "^TNX"},
         {"name": "Gold (XAUUSD)", "ticker": "GC=F"},
         {"name": "WTI Crude Oil", "ticker": "CL=F"},
+        {"name": "TLT (iShares 20+)", "ticker": "TLT"},
     ]
 
     cols = st.columns(len(strip_items))
     advances, declines = 18, 12
-    with st.spinner("ग्लोबल स्ट्रिप डेटा लोड हो रहा है..."):
+    with st.spinner("ग्लोबल स्ट्रिप लोड हो रही है..."):
         try:
             tickers_list = [x["ticker"] for x in strip_items]
             d_strip = yf.download(tickers_list, period="5d", interval="1d", group_by="ticker", progress=False)
@@ -642,11 +685,11 @@ def _render_news_events_tab() -> None:
         * **F&O Index Futures:** Net Long Exposure `54.2%`
         """)
         st.markdown("#### 🌅 Pre-Market Analysis")
-        st.info("GIFT Nifty संकेत: फ्लैट से सकारात्मक शुरुआत। ग्लोबल डॉलर इंडेक्स (DXY) स्थिर होने से आईटी और बैंकिंग शेयरों में सपोर्ट की संभावना।")
+        st.info("GIFT Nifty संकेत: स्थिर शुरुआत। US 10Y Yield और DXY स्थिर होने से भारतीय बाजारों में पॉजिटिव रुझान।")
 
     with e2:
         st.markdown("#### 🌆 Post-Market & Key Macro Events")
-        st.info("यूएस 10-वर्षीय यील्ड और क्रूड ऑयल की कीमतों पर नज़र रखें। फेडरल रिजर्व वक्तव्य एवं आगामी कॉर्पोरेट आय घोषणाएं दिशा तय करेंगी।")
+        st.info("TLT बॉन्ड ईटीएफ और क्रूड ऑयल की कीमतों पर नजर रखें। अमेरिकी बाजार रुझान का सीधा असर देखने को मिलेगा।")
         st.markdown("#### 📢 GDELT Headline News")
         news_payload = local_backend.get("/api/news", params={"symbol": "NIFTY OR NSE"}, timeout=15)
         articles = news_payload.get("data") if isinstance(news_payload.get("data"), list) else []
@@ -656,10 +699,10 @@ def _render_news_events_tab() -> None:
         else:
             st.caption("ग्लोबल हेडलाइन फीड सक्रिय है।")
 
-# ----------------- TAB 5: SETTINGS -----------------
+# ----------------- TAB 5: SETTINGS (DISTAL BUFFER ADDED) -----------------
 def _render_settings_tab(settings: dict) -> None:
     st.markdown("### ⚙️ TERMINAL & ZONE ENGINE SETTINGS")
-    st.caption("यहाँ से EOD Range फ़िल्टर, रिस्क मैनेजमेंट और टाइमफ्रेम सेटिंग्स को नियंत्रित करें।")
+    st.caption("यहाँ से EOD Range फ़िल्टर, Distal Stoploss Buffer और रिस्क मैनेजमेंट को नियंत्रित करें।")
 
     with st.form("terminal_settings_form"):
         s1, s2 = st.columns(2)
@@ -671,6 +714,11 @@ def _render_settings_tab(settings: dict) -> None:
                                  value=float(settings.get("eod_high_buffer_pct", 10.0)), step=1.0)
             low_buf = st.slider("Day Close Low Buffer (%)", min_value=0.0, max_value=30.0,
                                 value=float(settings.get("eod_low_buffer_pct", 10.0)), step=1.0)
+
+            # Distal Stoploss Buffer जोड़ दिया गया
+            distal_buf = st.slider("Distal Stoploss Buffer (%)", min_value=0.0, max_value=5.0,
+                                   value=float(settings.get("distal_buffer_pct", 0.5)), step=0.1,
+                                   help="Distal Line (Stoploss) के बाहर अतिरिक्त सुरक्षा बफर प्रतिशत")
 
         with s2:
             st.markdown("#### 🛡️ Risk & Capital Management")
@@ -686,6 +734,7 @@ def _render_settings_tab(settings: dict) -> None:
             st.session_state.analysis_settings["use_eod_range"] = use_eod
             st.session_state.analysis_settings["eod_high_buffer_pct"] = high_buf
             st.session_state.analysis_settings["eod_low_buffer_pct"] = low_buf
+            st.session_state.analysis_settings["distal_buffer_pct"] = distal_buf
             st.session_state.analysis_settings["account_capital"] = cap
             st.session_state.analysis_settings["risk_pct"] = risk
             st.session_state.analysis_settings["target_rr"] = target_rr
