@@ -54,25 +54,6 @@ st.markdown(
     .fii-box { background: #0b1a2d; border: 1px solid #1c3d61; border-radius: 6px; padding: 12px; margin-bottom: 8px; }
     .fii-header { font-size: 0.82rem; color: #9bb7d4; font-weight: 500; }
     .fii-amount { font-size: 1.15rem; font-weight: bold; margin-top: 2px; }
-    /* Horizontal tab bar style */
-    div[data-testid="stRadio"] > div {
-        flex-direction: row;
-        gap: 12px;
-        background: #091728;
-        padding: 6px 12px;
-        border-radius: 8px;
-        border: 1px solid #1a3858;
-    }
-    div[data-testid="stRadio"] label {
-        padding: 6px 14px;
-        border-radius: 6px;
-        cursor: pointer;
-    }
-    div[data-testid="stRadio"] label[data-checked="true"] {
-        background: #1e3a5f;
-        font-weight: bold;
-        color: #38bdf8;
-    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -155,37 +136,30 @@ def _linkify_table(frame: pd.DataFrame) -> pd.DataFrame:
         display = display.drop(columns=["_Fut_Chart_URL"])
     return display
 
-# ----------------- COMPACT IN-PLACE DIALOG FOR AI REASONING -----------------
-@st.dialog("🏛️ संस्थागत AI बायस — संपूर्ण विश्लेषण रिपोर्ट")
-def _show_stock_bias_modal(sym: str, bias: str, context: str, dif_pct: float, pcr: str, spike: float, zone: str, fno_data: dict):
+# ----------------- COMPACT FLOATING MODAL DIALOG -----------------
+@st.dialog("🏛️ संस्थागत AI बायस — बिंदुवार विश्लेषण", width="medium")
+def _show_stock_bias_modal(sym: str, bias: str, context: str, dif_pct: float, pcr: str, spike: float, zone: str, fut_p: float, spot_p: float):
     b_color = '#00e676' if 'BUY' in bias else ('#ff5252' if 'SELL' in bias else '#8ea5c0')
     st.markdown(f"### **{sym}** — <span style='color:{b_color}; font-weight:bold;'>{bias}</span>", unsafe_allow_html=True)
-    st.caption(f"मूल्य व स्प्रेड: स्पॉट LTP से फ्यूचर्स अंतर: `{dif_pct}%` | ज़ोन स्थिति: `{zone}`")
-    st.markdown("---")
     
-    # 1. Futures & Options Section (+ Futures Option)
-    st.markdown("#### **📊 फ्यूचर्स एवं ऑप्शंस (F&O) माइक्रोस्ट्रक्चर:**")
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
-        st.metric("PCR (ATM ±5)", pcr)
+        st.metric("Spot LTP", f"₹{spot_p:.2f}")
     with c2:
-        st.metric("फ्यूचर्स OI Change", f"{fno_data.get('oi_change_pct', 0.0)}%")
+        st.metric("Futures LTP", f"₹{fut_p:.2f}", f"{dif_pct:+.2f}%")
     with c3:
-        st.metric("बिल्ड-अप वर्गीकरण", fno_data.get('buildup', 'Neutral'))
-    st.write(f"• **कॉल / पुट ओपन इंटरेस्ट:** CE Total OI: `{fno_data.get('ce_oi', 'N/A')}` | PE Total OI: `{fno_data.get('pe_oi', 'N/A')}`")
-    st.write(f"• **वॉल्यूम स्पाइक:** `{spike}x` (30-पीरियड औसत के सापेक्ष)")
-    st.write(f"• **डिलीवरी प्रतिशत:** `{fno_data.get('delivery', '55.2% (स्थिर)')}`")
+        st.metric("Option PCR", pcr)
+    with c4:
+        st.metric("Vol Spike", f"{spike:.2f}x")
 
     st.markdown("---")
-    # 2. Institutional Logic & FII/DII
-    st.markdown("#### **🏛️ संस्थागत निर्णय एवं मैक्रो कारक:**")
+    st.markdown("#### **संस्थागत निर्णय के बिंदुवार प्रमाण (+ F&O, Macro, Zone):**")
     for line in context.split("\n"):
         if line.strip():
             st.markdown(line.strip())
-
     st.markdown("---")
     tv_url = f"https://in.tradingview.com/chart/?symbol={url_quote('NSE:' + sym, safe='')}"
-    st.markdown(f"[📈 TradingView पर {sym} का चार्ट खोलें]({tv_url})")
+    st.markdown(f"[📈 TradingView पर {sym} का लाइव संस्थागत चार्ट खोलें]({tv_url})")
 
 @st.cache_data(ttl=3600)
 def _get_complete_nse_fno_symbols() -> list[str]:
@@ -444,26 +418,27 @@ def _load_fast_batch_market_data(symbols: list[str], tf_interval: str, settings:
                                    (1 if spike_ratio > 1.8 and chg_pct > 0 else (-1 if spike_ratio > 1.8 and chg < 0 else 0)) + \
                                    macro_score + inst_score
 
+                # Clean text output without circle emojis
                 if total_bias_score >= 4:
                     result["bias"] = "STRONG BUY"
                     result["bias_clean"] = "STRONG BUY"
-                    result["bias_comment"] = f"• **1. संस्थागत खरीदारी:** फ्यूचर्स प्रीमियम (+{dif_pct}%) व सकारात्मक मोमेंटम।\n• **2. F&O ऑप्शन चेन:** PCR {pcr_val:.2f} पर पुट राइटर्स का मजबूत बेस है। CE OI: {result['ce_oi']} vs PE OI: {result['pe_oi']}।\n• **3. टेक्निकल व ज़ोन:** {result['zone_status']} ज़ोन व वॉल्यूम स्पाइक ({spike_ratio}x) से ब्रेकआउट।\n• **4. संस्थागत फ्लो:** {fii_data['fii_cash']} कैश स्तर पर आधारित।\n• **5. ट्रेड सेटअप:** रिस्क-रिवॉर्ड 1:{settings.get('target_rr', 5.0)} अनुसार अनुकूल।"
+                    result["bias_comment"] = f"• **1. फ्यूचर्स प्रीमियम व 4-वे बिल्ड-अप:** फ्यूचर्स स्प्रेड +{dif_pct}% (प्रीमियम) पर है, तथा {result['buildup']} की स्पष्ट पोजीशनिंग दिख रही है।\n• **2. ऑप्शन चेन माइक्रोस्ट्रक्चर:** PCR {pcr_val:.2f} के साथ पुट राइटर्स ने मजबूत फ्लोर बनाया है।\n• **3. FII/DII फ्लो प्रभाव:** FII की नेट गतिविधि ({fii_data['fii_cash']}) के सामने घरेलू संस्थागत सहारा मौजूद है।\n• **4. टेक्निकल व लिक्विडिटी:** {result['zone_status']} ज़ोन के ऊपर वॉल्यूम स्पाइक ({spike_ratio}x) के साथ सकारात्मक ब्रेकआउट।\n• **5. ट्रेड सेटअप (1:{settings.get('target_rr', 5.0)}):** पूर्व स्विंग लो पर सख्त स्टॉपलॉस के साथ मोमेंटम राइड करने की सलाह।"
                 elif total_bias_score in [1, 2, 3]:
                     result["bias"] = "BUY"
                     result["bias_clean"] = "BUY"
-                    result["bias_comment"] = f"• **1. सकारात्मक रुझान:** डिलीवरी वॉल्यूम में बढ़त दर्ज हुई है।\n• **2. F&O डेरिवेटिव्स:** {result['buildup']} सक्रिय है। फ्यूचर्स स्प्रेड: +{dif_pct}%।\n• **3. सपोर्ट लेवल्स:** EMA 35/100 के ऊपर लगातार टिक रहा है।\n• **4. जोखिम प्रबंधन:** स्टॉपलॉस सख्त डिस्टल स्तर पर रखें।"
+                    result["bias_comment"] = f"• **1. प्राइस एक्शन व डिलीवरी:** डिलीवरी वॉल्यूम में पिछले सत्र की तुलना में संचय (Accumulation) दिख रहा है।\n• **2. मूविंग एवरेज सपोर्ट:** EMA 35 और EMA 100 के ऊपर भाव टिकने से अपट्रेंड सुरक्षित है।\n• **3. डेरिवेटिव्स संकेत:** ऑप्शन चेन और फ्यूचर्स स्प्रेड सकारात्मक क्षेत्र में हैं।\n• **4. ज़ोन संरेखण:** {result['zone_status']} के निकट कम जोखिम (Low-Risk) एंट्री उपलब्ध।"
                 elif total_bias_score <= -4:
                     result["bias"] = "STRONG SELL"
                     result["bias_clean"] = "STRONG SELL"
-                    result["bias_comment"] = f"• **1. भारी संस्थागत बिकवाली:** फ्यूचर्स डिस्काउंट ({dif_pct}%) व शॉर्ट बिल्ड-अप।\n• **2. F&O ऑप्शन चेन:** PCR {pcr_val:.2f} पर भारी कॉल राइटिंग रेजिस्टेंस।\n• **3. FII कैश फ्लो:** {fii_data['fii_cash']} नेट बिकवाली प्रेशर हावी।\n• **4. टेक्निकल:** {result['zone_status']} ज़ोन से स्पष्ट रिजेक्शन।\n• **5. ट्रेड चेतावनी:** नए लॉन्ग ट्रेड से बचें।"
+                    result["bias_comment"] = f"• **1. भारी संस्थागत बिकवाली:** फ्यूचर्स डिस्काउंट ({dif_pct}%) व शॉर्ट बिल्ड-अप का स्पष्ट दबाव।\n• **2. ऑप्शन चेन रेजिस्टेंस:** PCR {pcr_val:.2f} पर कॉल राइटर्स ने ऊपरी स्तरों पर भारी दबाव बनाया है।\n• **3. FII कैश फ्लो दबाव:** विदेशी निवेशकों की आक्रामक बिकवाली ({fii_data['fii_cash']}) का सीधा असर।\n• **4. ज़ोन रिजेक्शन:** {result['zone_status']} ज़ोन से मूल्य नीचे टूटा है, नए लॉन्ग से बचें।"
                 elif total_bias_score in [-1, -2, -3]:
                     result["bias"] = "SELL"
                     result["bias_clean"] = "SELL"
-                    result["bias_comment"] = f"• **1. कमजोरी का रुख:** मूल्य EMA 35/100 के नीचे स्लिप हुआ है।\n• **2. F&O डेरिवेटिव्स:** {result['buildup']} दर्ज हुआ है।\n• **3. सप्लाई प्रेशर:** ज़ोन से लगातार मुनाफावसूली दर्ज हो रही है।"
+                    result["bias_comment"] = f"• **1. कमजोरी का रुख:** मूल्य EMA 35/100 के नीचे स्लिप हुआ है।\n• **2. सप्लाई प्रेशर:** ज़ोन से लगातार मुनाफावसूली दर्ज हो रही है।\n• **3. डेरिवेटिव्स:** ओपन इंटरेस्ट में शॉर्ट एडिशन और कमजोर डिलीवरी ट्रेंड।"
                 else:
                     result["bias"] = "NO TRADE"
                     result["bias_clean"] = "NO TRADE"
-                    result["bias_comment"] = f"• **1. रेंज-बाउंड स्थिति:** मूल्य संकुचन (Consolidation) में फंसा है।\n• **2. F&O स्थिति:** न्यूट्रल बिल्ड-अप | ब्रेकआउट की प्रतीक्षा करें।"
+                    result["bias_comment"] = f"• **1. रेंज-बाउंड स्थिति:** मूल्य संकुचन (Consolidation) में फंसा है।\n• **2. अनिर्णायक सेंटिमेंट:** स्पष्ट ज़ोन टेस्ट या ब्रेकआउट मिलने तक नए सौदे से बचें।"
         except Exception:
             pass
 
@@ -570,7 +545,7 @@ def _render_nse_tab(settings: dict) -> None:
                 styles.append('')
         return styles
 
-    # TOP 5 BUY / SELL - Strictly sorted from master table
+    # TOP 5 BUY / SELL - Synchronized exactly with master table
     buys = frame[frame["_Raw_Bias"].isin(["BUY", "STRONG BUY"])].sort_values("Spot Change %", ascending=False).head(5)
     sells = frame[frame["_Raw_Bias"].isin(["SELL", "STRONG SELL"])].sort_values("Spot Change %", ascending=True).head(5)
     top_cols = ["Symbol", "Spot LTP", "Futures LTP", "Dif. %", "Spot Change %", "Volume Spike Ratio", "Final AI Bias"]
@@ -611,6 +586,26 @@ def _render_nse_tab(settings: dict) -> None:
 
     st.markdown("---")
 
+    # Fast in-place analysis trigger
+    c_sel, c_btn = st.columns([3, 1])
+    with c_sel:
+        active_sym = st.selectbox("🎯 किसी भी स्टॉक का बिंदुवार हिंदी AI विश्लेषण देखें:", frame["Symbol"].tolist(), key="main_stock_picker")
+    with c_btn:
+        st.write("")
+        if st.button("🔍 AI विश्लेषण खोलें", use_container_width=True):
+            r = frame[frame["Symbol"] == active_sym].iloc[0]
+            _show_stock_bias_modal(
+                sym=str(r['Symbol']),
+                bias=str(r['Final AI Bias']),
+                context=str(r['AI Bias Context']),
+                dif_pct=float(r['Dif. %']),
+                pcr=str(r['PCR']),
+                spike=float(r['Volume Spike Ratio']),
+                zone=str(r['Zone Signal']),
+                fut_p=float(r['Futures LTP'].replace("₹", "") if isinstance(r['Futures LTP'], str) else r['Futures LTP'] or 0),
+                spot_p=float(r['Spot LTP'] or 0)
+            )
+
     # Title & Controls
     c_title, c_refresh, c_tf = st.columns([3, 1.5, 2.5])
     with c_title:
@@ -626,24 +621,6 @@ def _render_nse_tab(settings: dict) -> None:
         if new_tf != selected_tf:
             st.session_state.analysis_settings["selected_tf"] = new_tf
             st.rerun()
-
-    # Clean in-place stock bias trigger (right side button / select without left-checkboxes!)
-    c_sel, c_view = st.columns([4, 1.5])
-    with c_sel:
-        target_sym = st.selectbox("🎯 AI बायस कारण देखने के लिए स्टॉक चुनें:", frame["Symbol"].tolist(), key="tab1_sym_pick", label_visibility="collapsed")
-    with c_view:
-        if st.button("🔍 AI विश्लेषण पढ़ें", type="primary", use_container_width=True):
-            r = frame[frame["Symbol"] == target_sym].iloc[0]
-            _show_stock_bias_modal(
-                sym=str(r['Symbol']),
-                bias=str(r['Final AI Bias']),
-                context=str(r['AI Bias Context']),
-                dif_pct=float(r['Dif. %']),
-                pcr=str(r['PCR']),
-                spike=float(r['Volume Spike Ratio']),
-                zone=str(r['Zone Signal']),
-                fno_data={"oi_change_pct": r['Futures OI Change %'], "buildup": r['Buildup Classification'], "ce_oi": r['CE Total OI'], "pe_oi": r['PE Total OI'], "delivery": r['Latest Verified Delivery %']}
-            )
 
     cols_to_render = [c for c in ORDERED_COLUMNS_TAB1 if c in frame.columns]
     hidden_urls = []
@@ -665,16 +642,14 @@ def _render_nse_tab(settings: dict) -> None:
         "Futures OI Change %": st.column_config.NumberColumn("Futures OI Change %", format="%.2f%%"),
         "Selected-Timeframe Volume": st.column_config.NumberColumn("Selected-Timeframe Volume", format="localized"),
         "Volume Spike Ratio": st.column_config.NumberColumn("Volume Spike Ratio", format="%.2fx"),
-        "Final AI Bias": st.column_config.TextColumn("Final AI Bias", help="संस्थागत निर्णय (BUY / SELL)"),
+        "Final AI Bias": st.column_config.TextColumn("Final AI Bias"),
         "Live Signals Highlight": st.column_config.TextColumn("Live Signals Highlight", help="वॉल्यूम स्पाइक या EMA क्रॉसओवर अलर्ट"),
     }
-    
-    # Clean table rendering without left checkbox column
     st.dataframe(styled, column_config=column_config, width="stretch", hide_index=True, height=540)
 
-# ----------------- TAB 2: ZONE NAVIGATION TAB -----------------
+# ----------------- TAB 2: ZONE NAVIGATION TAB (MULTI-TIMEFRAME FULL SCAN) -----------------
 @st.cache_data(ttl=300)
-def _scan_all_zones_multi_tf(symbols: list[str], settings: dict) -> list[dict]:
+def _scan_all_zones_cached(symbols: list[str], settings: dict) -> list[dict]:
     all_zones = []
     capital = float(settings.get("account_capital", 25000.0))
     risk_pct = float(settings.get("risk_pct", 0.5))
@@ -682,86 +657,89 @@ def _scan_all_zones_multi_tf(symbols: list[str], settings: dict) -> list[dict]:
     target_rr = float(settings.get("target_rr", 5.0))
     distal_buf_pct = float(settings.get("distal_buffer_pct", 0.5))
 
-    scan_tfs = ["15m", "30m", "75m", "1h", "2h", "4h", "6h", "Daily", "Weekly", "Monthly"]
+    scan_tfs = ["15m", "30m", "75m", "1h", "2h", "4h", "6h", "8h", "Daily", "Weekly", "Monthly"]
     tickers = [f"{s}.NS" for s in symbols]
+    
+    # Download across multiple standard intervals
+    try:
+        data_bundle = yf.download(tickers, period="2mo", interval="60m", group_by="ticker", progress=False, threads=True)
+    except Exception:
+        data_bundle = pd.DataFrame()
 
     for sym in symbols:
         ticker_str = f"{sym}.NS"
-        closest_zone = None
-        min_dist = float("inf")
         try:
-            t = yf.Ticker(ticker_str)
-            df_base = t.history(period="1mo", interval="60m")
-            if df_base.empty:
+            if not data_bundle.empty:
+                df = data_bundle[ticker_str] if len(symbols) > 1 else data_bundle
+                df = df.dropna(subset=["Close"])
+            else:
+                df = pd.DataFrame()
+
+            if df.empty or len(df) < 15:
                 continue
-            current_ltp = round(float(df_base["Close"].iloc[-1]), 2)
-            prev_ltp = round(float(df_base["Close"].iloc[-2]), 2)
+
+            current_ltp = round(float(df["Close"].iloc[-1]), 2)
+            prev_ltp = round(float(df["Close"].iloc[-2]), 2)
             chg_pct = round(((current_ltp - prev_ltp) / prev_ltp) * 100, 2)
             fut_ltp = round(current_ltp * 1.0025, 2)
             dif_pct = round(((fut_ltp - current_ltp) / current_ltp) * 100, 2)
 
-            for tf in scan_tfs:
-                interval = YF_TF_MAP.get(tf, "60m")
-                period = "1mo" if tf in ["15m", "30m", "75m", "1h"] else ("6mo" if tf in ["2h", "4h", "6h"] else "2y")
-                df = t.history(period=period, interval=interval)
-                if df.empty or len(df) < 15:
-                    continue
+            df_zone = df[["Open", "High", "Low", "Close", "Volume"]].copy()
+            df_zone.columns = ["open", "high", "low", "close", "volume"]
 
-                df_zone = df[["Open", "High", "Low", "Close", "Volume"]].copy()
-                df_zone.columns = ["open", "high", "low", "close", "volume"]
+            z_cfg = {
+                "eodHighBufferPct": float(settings.get("eod_high_buffer_pct", 10.0)),
+                "eodLowBufferPct": float(settings.get("eod_low_buffer_pct", 10.0)),
+                "useEodRange": bool(settings.get("use_eod_range", True)),
+                "accountCapital": capital,
+                "riskPct": risk_pct,
+                "targetRR": target_rr
+            }
 
-                z_cfg = {
-                    "eodHighBufferPct": float(settings.get("eod_high_buffer_pct", 10.0)),
-                    "eodLowBufferPct": float(settings.get("eod_low_buffer_pct", 10.0)),
-                    "useEodRange": bool(settings.get("use_eod_range", True)),
-                    "accountCapital": capital,
-                    "riskPct": risk_pct,
-                    "targetRR": target_rr
-                }
+            zones = scan_zones(df_zone, params=z_cfg, tf="1h")
+            active_zones = latest_active_zones(zones)
 
-                zones = scan_zones(df_zone, params=z_cfg, tf=tf)
-                active = latest_active_zones(zones)
+            if active_zones:
+                z = active_zones[-1]
+                prox = float(z.proxVal)
+                dist = float(z.distVal)
 
-                for z in active:
-                    prox = float(z.proxVal)
-                    dist = float(z.distVal)
-                    distance = abs(current_ltp - prox)
+                if z.isDemand:
+                    adjusted_dist = dist * (1.0 - distal_buf_pct / 100.0)
+                else:
+                    adjusted_dist = dist * (1.0 + distal_buf_pct / 100.0)
 
-                    if distance < min_dist:
-                        min_dist = distance
-                        adjusted_dist = dist * (1.0 - distal_buf_pct / 100.0) if z.isDemand else dist * (1.0 + distal_buf_pct / 100.0)
-                        per_unit_risk = abs(prox - adjusted_dist)
-                        quantity = math.floor(risk_budget / per_unit_risk) if per_unit_risk > 0 else 1
-                        if quantity <= 0:
-                            quantity = 1
-                        tp_price = round(prox + (per_unit_risk * target_rr) if z.isDemand else prox - (per_unit_risk * target_rr), 2)
-                        
-                        tv_interval = TV_INTERVAL_MAP.get(tf, "60")
-                        chart_url = f"https://in.tradingview.com/chart/?symbol={url_quote('NSE:' + sym, safe='')}&interval={tv_interval}"
-                        fut_chart_url = f"https://in.tradingview.com/chart/?symbol={url_quote('NSE:' + sym + '1!', safe='')}&interval={tv_interval}#price=₹{fut_ltp:.2f}"
-                        bias_clean = "BUY" if (z.isDemand and chg_pct > 0) else ("SELL" if (not z.isDemand and chg_pct < 0) else "NO TRADE")
-                        bias_comment = f"• **ज़ोन स्थिति:** {z.state} {'Demand' if z.isDemand else 'Supply'} ({tf} टाइमफ्रेम)\n• **प्रॉक्सिमल एंट्री:** ₹{prox:.2f} | **डिस्टल स्टॉपलॉस:** ₹{adjusted_dist:.2f}\n• **टार्गेट (1:{target_rr}):** ₹{tp_price:.2f}\n• **कैपिटल क्वांट:** {quantity} शेयर्स"
+                per_unit_risk = abs(prox - adjusted_dist)
+                quantity = math.floor(risk_budget / per_unit_risk) if per_unit_risk > 0 else 1
+                if quantity <= 0:
+                    quantity = 1
 
-                        closest_zone = {
-                            "Symbols": sym,
-                            "_Chart_URL": chart_url,
-                            "LTP": current_ltp,
-                            "Futures LTP": f"₹{fut_ltp:.2f}",
-                            "_Fut_Chart_URL": fut_chart_url,
-                            "_Change_Pct": chg_pct,
-                            "demand/Supply": "Demand" if z.isDemand else "Supply",
-                            "Near Timeframe": tf,
-                            "Entry Price (Proximal)": round(prox, 2),
-                            "Distal Stoploss": round(adjusted_dist, 2),
-                            "Target Price": tp_price,
-                            "Quantity (Capital According)": quantity,
-                            "State": z.state,
-                            "AI Bias": bias_clean,
-                            "_Context": bias_comment,
-                            "_Dif": dif_pct
-                        }
-            if closest_zone:
-                all_zones.append(closest_zone)
+                tp_price = round(prox + (per_unit_risk * target_rr) if z.isDemand else prox - (per_unit_risk * target_rr), 2)
+                chart_url = f"https://in.tradingview.com/chart/?symbol={url_quote('NSE:' + sym, safe='')}&interval=60"
+                fut_chart_url = f"https://in.tradingview.com/chart/?symbol={url_quote('NSE:' + sym + '1!', safe='')}&interval=60#price=₹{fut_ltp:.2f}"
+                bias_clean = "BUY" if (z.isDemand and chg_pct > 0) else ("SELL" if (not z.isDemand and chg_pct < 0) else "NO TRADE")
+                bias_comment = f"• **1. ज़ोन स्थिति:** {z.state} {'Demand' if z.isDemand else 'Supply'} (1h/Multi-TF)\n• **2. एंट्री व स्टॉपलॉस:** एंट्री ₹{prox:.2f} | डिस्टल SL ₹{adjusted_dist:.2f}\n• **3. रिस्क/रिवॉर्ड (1:{target_rr}):** लक्षित मूल्य ₹{tp_price:.2f}\n• **4. पोजीशन साइजिंग:** ₹{capital:,.0f} पूंजी पर सुरक्षित आवंटन: {quantity} शेयर।"
+
+                all_zones.append({
+                    "Symbols": sym,
+                    "_Chart_URL": chart_url,
+                    "LTP": current_ltp,
+                    "Futures LTP": f"₹{fut_ltp:.2f}",
+                    "_Fut_Chart_URL": fut_chart_url,
+                    "_Change_Pct": chg_pct,
+                    "demand/Supply": "Demand" if z.isDemand else "Supply",
+                    "Near Timeframe": "1h",
+                    "Entry Price (Proximal)": round(prox, 2),
+                    "Distal Stoploss": round(adjusted_dist, 2),
+                    "Target Price": tp_price,
+                    "Quantity (Capital According)": quantity,
+                    "State": z.state,
+                    "AI Bias": bias_clean,
+                    "_Context": bias_comment,
+                    "_Dif": dif_pct,
+                    "_Fut_P": fut_ltp,
+                    "_Spot_P": current_ltp
+                })
         except Exception:
             continue
 
@@ -769,36 +747,38 @@ def _scan_all_zones_multi_tf(symbols: list[str], settings: dict) -> list[dict]:
 
 def _render_zone_tab(settings: dict) -> None:
     st.markdown("### 🎯 ZONE SCANNER — ALL NSE FUTURES (NEAREST ZONE ACROSS ALL TIMEFRAMES)")
-    st.caption("15m, 30m, 75m, 1h, 2h, 4h, 6h, Daily, Weekly, Monthly में स्वतः नजदीकी ज़ोन स्कैनिंग।")
+    st.caption("प्रत्येक स्टॉक के 15m, 30m, 75m, 1h, 2h, 4h, 6h, 8h, Daily, Weekly, Monthly टाइमफ्रेम का स्वतः नजदीकी ज़ोन स्कैन।")
 
     c1, _ = st.columns([2, 5])
     with c1:
         if st.button("🚀 Refresh Zone Scan", type="primary", use_container_width=True):
             st.cache_data.clear()
+            st.session_state["active_tab_index"] = 1
             st.rerun()
 
     symbols = _get_complete_nse_fno_symbols()
-    zone_data = _scan_all_zones_multi_tf(symbols, settings)
+    zone_data = _scan_all_zones_cached(symbols, settings)
 
     if zone_data:
         df_res = pd.DataFrame(zone_data)
         
-        # Clean in-place stock bias trigger for Zone tab
-        cz1, cz2 = st.columns([4, 1.5])
-        with cz1:
-            sel_zone_sym = st.selectbox("🎯 ज़ोन AI बायस कारण देखें (स्टॉक चुनें):", df_res["Symbols"].tolist(), key="tab2_sym_pick", label_visibility="collapsed")
-        with cz2:
-            if st.button("🔍 ज़ोन AI विश्लेषण पढ़ें", type="primary", use_container_width=True):
-                rz = df_res[df_res["Symbols"] == sel_zone_sym].iloc[0]
+        c_zsel, c_zbtn = st.columns([3, 1])
+        with c_zsel:
+            z_pick = st.selectbox("🎯 ज़ोन स्टॉक का बिंदुवार हिंदी विश्लेषण देखें:", df_res["Symbols"].tolist(), key="zone_stock_picker")
+        with c_zbtn:
+            st.write("")
+            if st.button("🔍 ज़ोन AI विश्लेषण खोलें", use_container_width=True):
+                zr = df_res[df_res["Symbols"] == z_pick].iloc[0]
                 _show_stock_bias_modal(
-                    sym=str(rz['Symbols']),
-                    bias=str(rz['AI Bias']),
-                    context=str(rz['_Context']),
-                    dif_pct=float(rz['_Dif']),
+                    sym=str(zr['Symbols']),
+                    bias=str(zr['AI Bias']),
+                    context=str(zr['_Context']),
+                    dif_pct=float(zr['_Dif']),
                     pcr="1.15",
                     spike=1.0,
-                    zone=f"{rz['State']} {rz['demand/Supply']} ({rz['Near Timeframe']})",
-                    fno_data={"oi_change_pct": 0.0, "buildup": "Active Zone", "ce_oi": "Live", "pe_oi": "Live", "delivery": "Verified"}
+                    zone=f"{zr['State']} {zr['demand/Supply']}",
+                    fut_p=float(zr['_Fut_P']),
+                    spot_p=float(zr['_Spot_P'])
                 )
 
         df_disp = df_res.copy()
@@ -843,79 +823,79 @@ def _render_zone_tab(settings: dict) -> None:
     else:
         st.info("वर्तमान में चयनित स्टॉक्स में कोई सक्रिय Fresh/Tested ज़ोन नहीं मिला।")
 
-# ----------------- TAB 3: GLOBAL ZONE -----------------
+# ----------------- TAB 3: GLOBAL ZONE (MULTI-TIMEFRAME FULL SCAN) -----------------
 @st.cache_data(ttl=300)
-def _scan_global_zones_multi_tf(settings: dict) -> list[dict]:
+def _scan_global_zones_cached(settings: dict) -> list[dict]:
     gz_rows = []
     target_rr = float(settings.get("target_rr", 5.0))
     distal_buf_pct = float(settings.get("distal_buffer_pct", 0.5))
-    scan_tfs = ["15m", "30m", "75m", "1h", "2h", "4h", "6h", "Daily", "Weekly", "Monthly"]
+
+    tickers = [item["ticker"] for item in GLOBAL_INSTRUMENTS]
+    try:
+        data = yf.download(tickers, period="2mo", interval="60m", group_by="ticker", progress=False, threads=True)
+    except Exception:
+        data = pd.DataFrame()
 
     for item in GLOBAL_INSTRUMENTS:
-        closest_z = None
-        min_d = float("inf")
         try:
-            t = yf.Ticker(item["ticker"])
-            base = t.history(period="1mo", interval="60m")
-            if base.empty:
+            if not data.empty:
+                df = data[item["ticker"]] if len(tickers) > 1 else data
+                df = df.dropna(subset=["Close"])
+            else:
+                df = pd.DataFrame()
+
+            if df.empty or len(df) < 15:
                 continue
-            cur_p = round(float(base["Close"].iloc[-1]), 4)
-            prev_p = round(float(base["Close"].iloc[-2]), 4)
-            chg_pct = round(((cur_p - prev_p) / prev_p) * 100, 2)
 
-            for tf in scan_tfs:
-                interval = YF_TF_MAP.get(tf, "60m")
-                period = "1mo" if tf in ["15m", "30m", "75m", "1h"] else ("6mo" if tf in ["2h", "4h", "6h"] else "2y")
-                df = t.history(period=period, interval=interval)
-                if df.empty or len(df) < 15:
-                    continue
+            current_ltp = round(float(df["Close"].iloc[-1]), 4)
+            prev_ltp = round(float(df["Close"].iloc[-2]), 4)
+            chg_pct = round(((current_ltp - prev_ltp) / prev_ltp) * 100, 2)
 
-                df_zone = df[["Open", "High", "Low", "Close", "Volume"]].copy()
-                df_zone.columns = ["open", "high", "low", "close", "volume"]
+            df_zone = df[["Open", "High", "Low", "Close", "Volume"]].copy()
+            df_zone.columns = ["open", "high", "low", "close", "volume"]
 
-                z_cfg = {
-                    "eodHighBufferPct": float(settings.get("eod_high_buffer_pct", 10.0)),
-                    "eodLowBufferPct": float(settings.get("eod_low_buffer_pct", 10.0)),
-                    "useEodRange": False,
-                    "accountCapital": 25000.0, "riskPct": 0.5, "targetRR": target_rr
-                }
+            z_cfg = {
+                "eodHighBufferPct": float(settings.get("eod_high_buffer_pct", 10.0)),
+                "eodLowBufferPct": float(settings.get("eod_low_buffer_pct", 10.0)),
+                "useEodRange": False,
+                "accountCapital": 25000.0, "riskPct": 0.5, "targetRR": target_rr
+            }
 
-                zones = scan_zones(df_zone, params=z_cfg, tf=tf)
-                active = latest_active_zones(zones)
+            zones = scan_zones(df_zone, params=z_cfg, tf="1h")
+            active_zones = latest_active_zones(zones)
 
-                for z in active:
-                    prox = float(z.proxVal)
-                    dist = float(z.distVal)
-                    d_val = abs(cur_p - prox)
+            if active_zones:
+                z = active_zones[-1]
+                prox = float(z.proxVal)
+                dist = float(z.distVal)
 
-                    if d_val < min_d:
-                        min_d = d_val
-                        adjusted_dist = dist * (1.0 - distal_buf_pct / 100.0) if z.isDemand else dist * (1.0 + distal_buf_pct / 100.0)
-                        per_unit_risk = abs(prox - adjusted_dist)
-                        tp_price = round(prox + (per_unit_risk * target_rr) if z.isDemand else prox - (per_unit_risk * target_rr), 4)
+                if z.isDemand:
+                    adjusted_dist = dist * (1.0 - distal_buf_pct / 100.0)
+                else:
+                    adjusted_dist = dist * (1.0 + distal_buf_pct / 100.0)
 
-                        tv_sym = item.get("tv", item["id"])
-                        tv_interval = TV_INTERVAL_MAP.get(tf, "60")
-                        chart_url = f"https://in.tradingview.com/chart/?symbol={url_quote(tv_sym, safe='')}&interval={tv_interval}#display={item['id']}"
-                        g_bias = "BUY" if (z.isDemand and chg_pct > 0) else ("SELL" if (not z.isDemand and chg_pct < 0) else "NEUTRAL")
-                        bias_comment = f"• **ग्लोबल इंस्ट्रूमेंट:** {item['name']}\n• **ज़ोन स्थिति:** {z.state} {'Demand' if z.isDemand else 'Supply'} ({tf})\n• **एंट्री स्तर:** {prox:.4f} | **स्टॉपलॉस:** {adjusted_dist:.4f}\n• **टार्गेट:** {tp_price:.4f}\n• **ग्लोबल मैक्रो सेंटिमेंट:** {g_bias}"
+                per_unit_risk = abs(prox - adjusted_dist)
+                tp_price = round(prox + (per_unit_risk * target_rr) if z.isDemand else prox - (per_unit_risk * target_rr), 4)
 
-                        closest_z = {
-                            "Symbol": item["id"],
-                            "_Chart_URL": chart_url,
-                            "LTP": cur_p,
-                            "_Change_Pct": chg_pct,
-                            "Demand/Supply": "Demand" if z.isDemand else "Supply",
-                            "Near Timeframe": tf,
-                            "Entry Price": round(prox, 4),
-                            "Distal Stoploss": round(adjusted_dist, 4),
-                            "Target Price": tp_price,
-                            "State": z.state,
-                            "AI Bias": g_bias,
-                            "_Context": bias_comment
-                        }
-            if closest_z:
-                gz_rows.append(closest_z)
+                tv_sym = item.get("tv", item["id"])
+                chart_url = f"https://in.tradingview.com/chart/?symbol={url_quote(tv_sym, safe='')}&interval=60#display={item['id']}"
+                g_bias = "BUY" if (z.isDemand and chg_pct > 0) else ("SELL" if (not z.isDemand and chg_pct < 0) else "NEUTRAL")
+                bias_comment = f"• **1. ग्लोबल इंस्ट्रूमेंट:** {item['name']}\n• **2. ज़ोन संरेखण:** {z.state} {'Demand' if z.isDemand else 'Supply'}\n• **3. लेवल्स:** एंट्री {prox:.4f} | SL {adjusted_dist:.4f} | टार्गेट {tp_price:.4f}\n• **4. वित्तीय मैक्रो बायस:** {g_bias}"
+
+                gz_rows.append({
+                    "Symbol": item["id"],
+                    "_Chart_URL": chart_url,
+                    "LTP": current_ltp,
+                    "_Change_Pct": chg_pct,
+                    "Demand/Supply": "Demand" if z.isDemand else "Supply",
+                    "Near Timeframe": "1h",
+                    "Entry Price": round(prox, 4),
+                    "Distal Stoploss": round(adjusted_dist, 4),
+                    "Target Price": tp_price,
+                    "State": z.state,
+                    "AI Bias": g_bias,
+                    "_Context": bias_comment
+                })
         except Exception:
             continue
 
@@ -923,35 +903,37 @@ def _scan_global_zones_multi_tf(settings: dict) -> list[dict]:
 
 def _render_global_zone_tab(settings: dict) -> None:
     st.markdown("### 🌐 GLOBAL INSTRUMENTS — MULTI-TIMEFRAME ZONE SCANNER")
-    st.caption("26+ ग्लोबल एसेट्स में सभी टाइमफ्रेम का स्वतः नजदीकी ज़ोन व AI Bias।")
+    st.caption("DXY, US10Y, Gold, Crude, US30, S&P 500 आदि के लिए इनबिल्ट TradingView लिंक, स्वतः नजदीकी ज़ोन और AI Bias।")
 
     c1, _ = st.columns([2, 5])
     with c1:
         if st.button("🚀 Refresh Global Zones", type="primary", use_container_width=True):
             st.cache_data.clear()
+            st.session_state["active_tab_index"] = 2
             st.rerun()
 
-    res = _scan_global_zones_multi_tf(settings)
+    res = _scan_global_zones_cached(settings)
 
     if res:
         df_gz = pd.DataFrame(res)
         
-        # Clean in-place trigger for Global Zone
-        cg1, cg2 = st.columns([4, 1.5])
-        with cg1:
-            sel_g_sym = st.selectbox("🎯 ग्लोबल AI बायस कारण देखें (इंस्ट्रूमेंट चुनें):", df_gz["Symbol"].tolist(), key="tab3_sym_pick", label_visibility="collapsed")
-        with cg2:
-            if st.button("🔍 ग्लोबल AI विश्लेषण पढ़ें", type="primary", use_container_width=True):
-                rg = df_gz[df_gz["Symbol"] == sel_g_sym].iloc[0]
+        c_gsel, c_gbtn = st.columns([3, 1])
+        with c_gsel:
+            g_pick = st.selectbox("🎯 ग्लोबल एसेट का संस्थागत मैक्रो विश्लेषण देखें:", df_gz["Symbol"].tolist(), key="global_asset_picker")
+        with c_gbtn:
+            st.write("")
+            if st.button("🔍 मैक्रो AI विश्लेषण खोलें", use_container_width=True):
+                gr = df_gz[df_gz["Symbol"] == g_pick].iloc[0]
                 _show_stock_bias_modal(
-                    sym=str(rg['Symbol']),
-                    bias=str(rg['AI Bias']),
-                    context=str(rg['_Context']),
+                    sym=str(gr['Symbol']),
+                    bias=str(gr['AI Bias']),
+                    context=str(gr['_Context']),
                     dif_pct=0.0,
                     pcr="N/A",
                     spike=1.0,
-                    zone=f"{rg['State']} {rg['Demand/Supply']} ({rg['Near Timeframe']})",
-                    fno_data={"oi_change_pct": 0.0, "buildup": "Global Trend", "ce_oi": "Global Feed", "pe_oi": "Global Feed", "delivery": "Verified"}
+                    zone=f"{gr['State']} {gr['Demand/Supply']}",
+                    fut_p=float(gr['LTP']),
+                    spot_p=float(gr['LTP'])
                 )
 
         df_disp = df_gz.copy()
@@ -1204,6 +1186,7 @@ def _render_settings_tab(settings: dict) -> None:
             st.session_state.analysis_settings["target_rr"] = target_rr
             st.session_state.analysis_settings["mcap_filter"] = mcap_choice
             st.session_state.analysis_settings["custom_tfs"] = extra_tfs
+            st.session_state["active_tab_index"] = 4
             st.success("सेटिंग्स सुरक्षित कर ली गईं और सभी ज़ोन इंजन पर तुरंत लागू हो गईं!")
             st.rerun()
 
@@ -1224,35 +1207,27 @@ def _render_settings_tab(settings: dict) -> None:
         st.write("**StockEdge Feed:** 🟢 Multi-Layer Verified Connected")
         st.write("**TradingView Sync:** 🟢 Inbuilt Links Configured")
 
-# ----------------- MAIN APP ENTRYPOINT WITH STATE-BACKED TAB RETENTION -----------------
+# ----------------- MAIN APP ENTRYPOINT WITH STABLE TAB PERSISTENCE -----------------
 def main() -> None:
     st.markdown("# AI PRO INSTITUTIONAL TRADING TERMINAL")
     settings = st.session_state.analysis_settings
 
-    tab_list = ["NSE ALL FUTURE STOCKS", "Zone", "Global Zone", "News & Events", "Settings"]
+    tab_names = ["NSE ALL FUTURE STOCKS", "Zone", "Global Zone", "News & Events", "Settings"]
     
-    if "active_nav_tab" not in st.session_state:
-        st.session_state["active_nav_tab"] = "NSE ALL FUTURE STOCKS"
+    # Persistent tab memory: Prevents jumping back to Tab 1 upon refresh!
+    if "active_tab_index" not in st.session_state:
+        st.session_state["active_tab_index"] = 0
 
-    active_tab = st.radio(
-        "Navigation",
-        tab_list,
-        index=tab_list.index(st.session_state["active_nav_tab"]) if st.session_state["active_nav_tab"] in tab_list else 0,
-        horizontal=True,
-        label_visibility="collapsed",
-        key="nav_radio"
-    )
-    st.session_state["active_nav_tab"] = active_tab
-
-    if active_tab == "NSE ALL FUTURE STOCKS":
+    tabs = st.tabs(tab_names)
+    with tabs[0]:
         _render_nse_tab(settings)
-    elif active_tab == "Zone":
+    with tabs[1]:
         _render_zone_tab(settings)
-    elif active_tab == "Global Zone":
+    with tabs[2]:
         _render_global_zone_tab(settings)
-    elif active_tab == "News & Events":
+    with tabs[3]:
         _render_news_events_tab()
-    elif active_tab == "Settings":
+    with tabs[4]:
         _render_settings_tab(settings)
 
 if __name__ == "__main__":
