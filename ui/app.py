@@ -54,6 +54,7 @@ st.markdown(
     .fii-box { background: #0b1a2d; border: 1px solid #1c3d61; border-radius: 6px; padding: 12px; margin-bottom: 8px; }
     .fii-header { font-size: 0.82rem; color: #9bb7d4; font-weight: 500; }
     .fii-amount { font-size: 1.15rem; font-weight: bold; margin-top: 2px; }
+    .deep-card { background: #0b1c33; border: 1px solid #1e3a5f; border-left: 5px solid #38bdf8; padding: 14px; border-radius: 6px; margin-top: 10px; margin-bottom: 15px; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -134,38 +135,7 @@ def _linkify_table(frame: pd.DataFrame) -> pd.DataFrame:
     if "Futures LTP" in display and "_Fut_Chart_URL" in display:
         display["Futures LTP"] = display["_Fut_Chart_URL"].fillna("").astype(str)
         display = display.drop(columns=["_Fut_Chart_URL"])
-    if "Final AI Bias" in display and "_Bias_Link_URL" in display:
-        display["Final AI Bias"] = display["_Bias_Link_URL"].fillna("").astype(str)
-        display = display.drop(columns=["_Bias_Link_URL"])
     return display
-
-# ----------------- IN-PLACE INSTITUTIONAL DIALOG -----------------
-@st.dialog("🏛️ संस्थागत AI बायस — विस्तृत क्वांट विश्लेषण")
-def _show_stock_bias_modal(sym: str, bias: str, context: str, dif_pct: float, pcr: str, spike: float, zone: str, delivery: str, buildup: str):
-    b_color = '#00e676' if 'BUY' in bias else ('#ff5252' if 'SELL' in bias else '#8ea5c0')
-    st.markdown(f"### **{sym}** — <span style='color:{b_color}; font-weight:bold;'>{bias}</span>", unsafe_allow_html=True)
-    
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.metric("फ्यूचर्स प्रीमियम (Dif %)", f"{dif_pct}%")
-    with c2:
-        st.metric("ऑप्शन PCR (ATM ±5)", pcr)
-    with c3:
-        st.metric("वॉल्यूम स्पाइक", f"{spike}x")
-    with c4:
-        st.metric("डेरिवेटिव्स बिल्ड-अप", buildup)
-        
-    st.markdown("---")
-    st.markdown("#### **संस्थागत क्वांट निर्णय (विस्तृत बिंदुवार रिपोर्ट):**")
-    for line in context.split("\n"):
-        if line.strip():
-            st.markdown(line.strip())
-            
-    st.markdown("---")
-    c_tv, _ = st.columns([2, 3])
-    with c_tv:
-        tv_url = f"https://in.tradingview.com/chart/?symbol={url_quote('NSE:' + sym, safe='')}"
-        st.markdown(f"[📈 TradingView पर {sym} का लाइव चार्ट खोलें]({tv_url})")
 
 @st.cache_data(ttl=3600)
 def _get_complete_nse_fno_symbols() -> list[str]:
@@ -424,7 +394,6 @@ def _load_fast_batch_market_data(symbols: list[str], tf_interval: str, settings:
                                    (1 if spike_ratio > 1.8 and chg_pct > 0 else (-1 if spike_ratio > 1.8 and chg < 0 else 0)) + \
                                    macro_score + inst_score
 
-                # NO CIRCLES - 100% CLEAN TEXT
                 if total_bias_score >= 4:
                     result["bias"] = "STRONG BUY"
                     result["bias_comment"] = f"• **1. संस्थागत खरीदारी:** फ्यूचर्स प्रीमियम (+{dif_pct}%) व सकारात्मक मोमेंटम।\n• **2. ऑप्शन चेन:** PCR {pcr_val:.2f} पर पुट राइटर्स का मजबूत सपोर्ट।\n• **3. टेक्निकल व ज़ोन:** {result['zone_status']} ज़ोन व वॉल्यूम स्पाइक ({spike_ratio}x) से ब्रेकआउट।\n• **4. FII/DII फ्लो:** {fii_data['fii_cash']} स्तर पर आधारित।\n• **5. ट्रेड सेटअप:** रिस्क-रिवॉर्ड 1:{settings.get('target_rr', 5.0)} अनुसार अनुकूल।"
@@ -446,9 +415,6 @@ def _load_fast_batch_market_data(symbols: list[str], tf_interval: str, settings:
         spot_url = f"https://in.tradingview.com/chart/?symbol={url_quote('NSE:' + sym, safe='')}"
         fut_val_str = f"₹{result['fut_ltp']:.2f}" if result["fut_ltp"] else "—"
         fut_url = f"https://in.tradingview.com/chart/?symbol={url_quote('NSE:' + sym + '1!', safe='')}#price={fut_val_str}"
-
-        # Clean in-app trigger URL for clicking Final AI Bias
-        bias_click_url = f"?show_bias={sym}"
 
         enriched.append({
             "Symbol": sym,
@@ -473,7 +439,6 @@ def _load_fast_batch_market_data(symbols: list[str], tf_interval: str, settings:
             "Zone Signal": result["zone_status"],
             "Live Signals Highlight": result["highlight_info"],
             "Final AI Bias": result["bias"],
-            "_Bias_Link_URL": bias_click_url,
             "AI Bias Context": result["bias_comment"],
             "Open Gap": result["open_gap"],
             "Data Source": "Live NSE Engine"
@@ -502,22 +467,6 @@ def _render_nse_tab(settings: dict) -> None:
     if frame.empty:
         st.info("डेटा लोड नहीं हो सका।")
         return
-
-    # Check if a stock's bias was clicked via URL param
-    clicked_bias_stock = st.query_params.get("show_bias", None)
-    if clicked_bias_stock and clicked_bias_stock in frame["Symbol"].values:
-        r_match = frame[frame["Symbol"] == clicked_bias_stock].iloc[0]
-        _show_stock_bias_modal(
-            sym=str(r_match['Symbol']),
-            bias=str(r_match['Final AI Bias']),
-            context=str(r_match['AI Bias Context']),
-            dif_pct=float(r_match['Dif. %']),
-            pcr=str(r_match['PCR']),
-            spike=float(r_match['Volume Spike Ratio']),
-            zone=str(r_match['Zone Signal']),
-            delivery=str(r_match['Latest Verified Delivery %']),
-            buildup=str(r_match['Buildup Classification'])
-        )
 
     if breadth_filter == "ADVANCES":
         frame = frame[frame["Spot Change %"] > 0]
@@ -565,7 +514,7 @@ def _render_nse_tab(settings: dict) -> None:
                 styles.append('')
         return styles
 
-    # TOP 5 BUY / SELL - Strictly sorted & synchronized from bottom master table
+    # TOP 5 BUY / SELL
     buys = frame[frame["Final AI Bias"].isin(["BUY", "STRONG BUY"])].sort_values("Spot Change %", ascending=False).head(5)
     sells = frame[frame["Final AI Bias"].isin(["SELL", "STRONG SELL"])].sort_values("Spot Change %", ascending=True).head(5)
     top_cols = ["Symbol", "Spot LTP", "Futures LTP", "Dif. %", "Spot Change %", "Volume Spike Ratio", "Final AI Bias"]
@@ -574,32 +523,32 @@ def _render_nse_tab(settings: dict) -> None:
     with col_l:
         st.markdown("**TOP 5 STRONG BUY**")
         if not buys.empty:
-            b_disp = _linkify_table(buys[top_cols + ["_Spot_Chart_URL", "_Fut_Chart_URL", "_Bias_Link_URL"]].copy())
+            b_disp = _linkify_table(buys[top_cols + ["_Spot_Chart_URL", "_Fut_Chart_URL"]].copy())
             st.dataframe(b_disp.style.apply(highlight_row_styling, axis=1),
                          column_config={
                              "Symbol": st.column_config.LinkColumn("Symbol", display_text=r".*symbol=NSE%3A([^&#]+).*"),
                              "Futures LTP": st.column_config.LinkColumn("Futures LTP", display_text=r".*#price=(.*)"),
-                             "Final AI Bias": st.column_config.LinkColumn("Final AI Bias", display_text=buys["Final AI Bias"].tolist()),
                              "Spot LTP": st.column_config.NumberColumn("Spot LTP", format="₹%.2f"),
                              "Dif. %": st.column_config.NumberColumn("Dif. %", format="%.2f%%"),
                              "Spot Change %": st.column_config.NumberColumn("Spot Change %", format="%.2f%%"),
                              "Volume Spike Ratio": st.column_config.NumberColumn("Volume Spike Ratio", format="%.2fx"),
+                             "Final AI Bias": st.column_config.TextColumn("Final AI Bias"),
                          }, width="stretch", hide_index=True, height=180)
         else:
             st.info("वर्तमान में कोई Strong Buy सेटअप नहीं।")
     with col_r:
         st.markdown("**TOP 5 STRONG SELL**")
         if not sells.empty:
-            s_disp = _linkify_table(sells[top_cols + ["_Spot_Chart_URL", "_Fut_Chart_URL", "_Bias_Link_URL"]].copy())
+            s_disp = _linkify_table(sells[top_cols + ["_Spot_Chart_URL", "_Fut_Chart_URL"]].copy())
             st.dataframe(s_disp.style.apply(highlight_row_styling, axis=1),
                          column_config={
                              "Symbol": st.column_config.LinkColumn("Symbol", display_text=r".*symbol=NSE%3A([^&#]+).*"),
                              "Futures LTP": st.column_config.LinkColumn("Futures LTP", display_text=r".*#price=(.*)"),
-                             "Final AI Bias": st.column_config.LinkColumn("Final AI Bias", display_text=sells["Final AI Bias"].tolist()),
                              "Spot LTP": st.column_config.NumberColumn("Spot LTP", format="₹%.2f"),
                              "Dif. %": st.column_config.NumberColumn("Dif. %", format="%.2f%%"),
                              "Spot Change %": st.column_config.NumberColumn("Spot Change %", format="%.2f%%"),
                              "Volume Spike Ratio": st.column_config.NumberColumn("Volume Spike Ratio", format="%.2fx"),
+                             "Final AI Bias": st.column_config.TextColumn("Final AI Bias"),
                          }, width="stretch", hide_index=True, height=180)
         else:
             st.info("वर्तमान में कोई Strong Sell सेटअप नहीं।")
@@ -628,8 +577,6 @@ def _render_nse_tab(settings: dict) -> None:
         hidden_urls.append("_Spot_Chart_URL")
     if "Futures LTP" in cols_to_render:
         hidden_urls.append("_Fut_Chart_URL")
-    if "Final AI Bias" in cols_to_render:
-        hidden_urls.append("_Bias_Link_URL")
 
     display = _linkify_table(frame[cols_to_render + hidden_urls].copy())
     styled = display.style.apply(highlight_row_styling, axis=1)
@@ -637,7 +584,6 @@ def _render_nse_tab(settings: dict) -> None:
     column_config = {
         "Symbol": st.column_config.LinkColumn("Symbol", display_text=r".*symbol=NSE%3A([^&#]+).*"),
         "Futures LTP": st.column_config.LinkColumn("Futures LTP", display_text=r".*#price=(.*)"),
-        "Final AI Bias": st.column_config.LinkColumn("Final AI Bias", display_text=frame["Final AI Bias"].tolist()),
         "Spot LTP": st.column_config.NumberColumn("Spot LTP", format="₹%.2f"),
         "Dif. %": st.column_config.NumberColumn("Dif. %", format="%.2f%%"),
         "Spot Change %": st.column_config.NumberColumn("Spot Change %", format="%.2f%%"),
@@ -645,11 +591,33 @@ def _render_nse_tab(settings: dict) -> None:
         "Futures OI Change %": st.column_config.NumberColumn("Futures OI Change %", format="%.2f%%"),
         "Selected-Timeframe Volume": st.column_config.NumberColumn("Selected-Timeframe Volume", format="localized"),
         "Volume Spike Ratio": st.column_config.NumberColumn("Volume Spike Ratio", format="%.2fx"),
+        "Final AI Bias": st.column_config.TextColumn("Final AI Bias", help="संस्थागत निर्णय (BUY / SELL)"),
         "Live Signals Highlight": st.column_config.TextColumn("Live Signals Highlight", help="वॉल्यूम स्पाइक या EMA क्रॉसओवर अलर्ट"),
     }
     
-    # Clean in-place table display - NO LEFT CHECKBOXES!
+    # 100% CLEAN TABLE - NO LEFT CHECKBOXES
     st.dataframe(styled, column_config=column_config, width="stretch", hide_index=True, height=540)
+
+    # Clean Dropdown at the bottom to inspect any stock's Hindi AI Report
+    st.markdown("---")
+    c_sel, _ = st.columns([2.5, 4.5])
+    with c_sel:
+        sel_stock = st.selectbox("🎯 किसी भी स्टॉक का विस्तृत AI संस्थागत विश्लेषण देखें:", frame["Symbol"].tolist())
+    
+    if sel_stock:
+        m_row = frame[frame["Symbol"] == sel_stock].iloc[0]
+        b_color = '#00e676' if 'BUY' in m_row['Final AI Bias'] else ('#ff5252' if 'SELL' in m_row['Final AI Bias'] else '#8ea5c0')
+        st.markdown(f"""
+        <div class="deep-card">
+            <h4 style="margin:0 0 6px 0; color:#f8fafc;">🏛️ {m_row['Symbol']} — संस्थागत AI निर्णय: <span style="color:{b_color}; font-weight:bold;">{m_row['Final AI Bias']}</span></h4>
+            <div style="font-size:0.90rem; line-height:1.6; color:#e2e8f0;">
+                {m_row['AI Bias Context'].replace(chr(10), '<br/>')}
+            </div>
+            <div style="font-size:0.80rem; color:#94a3b8; margin-top:8px;">
+                <b>फ्यूचर्स स्प्रेड (Dif %):</b> {m_row['Dif. %']}% | <b>PCR:</b> {m_row['PCR']} | <b>वॉल्यूम स्पाइक:</b> {m_row['Volume Spike Ratio']}x | <b>ज़ोन:</b> {m_row['Zone Signal']}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
 # ----------------- TAB 2: ZONE NAVIGATION TAB -----------------
 @st.cache_data(ttl=300)
@@ -719,7 +687,6 @@ def _scan_all_zones_cached(symbols: list[str], settings: dict) -> list[dict]:
                 chart_url = f"https://in.tradingview.com/chart/?symbol={url_quote('NSE:' + sym, safe='')}&interval=60"
                 fut_chart_url = f"https://in.tradingview.com/chart/?symbol={url_quote('NSE:' + sym + '1!', safe='')}&interval=60#price=₹{fut_ltp:.2f}"
                 bias_clean = "BUY" if (z.isDemand and chg_pct > 0) else ("SELL" if (not z.isDemand and chg_pct < 0) else "NO TRADE")
-                bias_click_url = f"?show_bias={sym}&tab=Zone"
 
                 all_zones.append({
                     "Symbols": sym,
@@ -736,7 +703,6 @@ def _scan_all_zones_cached(symbols: list[str], settings: dict) -> list[dict]:
                     "Quantity (Capital According)": quantity,
                     "State": z.state,
                     "Final AI Bias": bias_clean,
-                    "_Bias_Link_URL": bias_click_url,
                 })
         except Exception:
             continue
@@ -745,7 +711,7 @@ def _scan_all_zones_cached(symbols: list[str], settings: dict) -> list[dict]:
 
 def _render_zone_tab(settings: dict) -> None:
     st.markdown("### 🎯 ZONE SCANNER — ALL NSE FUTURES (NEAREST ZONE ACROSS ALL TIMEFRAMES)")
-    st.caption("प्रत्येक स्टॉक के सभी टाइमफ्रेम का स्वतः नजदीकी ज़ोन स्कैन। Final AI Bias पर टच करके सीधा विश्लेषण देखें।")
+    st.caption("प्रत्येक स्टॉक के सभी टाइमफ्रेम का स्वतः नजदीकी ज़ोन स्कैन। सिंबल पर क्लिक करने पर चार्ट सीधे उसी ज़ोन टाइमफ्रेम में खुलेगा।")
 
     c1, _ = st.columns([2, 5])
     with c1:
@@ -759,27 +725,9 @@ def _render_zone_tab(settings: dict) -> None:
 
     if zone_data:
         df_res = pd.DataFrame(zone_data)
-        
-        # Check if URL bias parameter clicked
-        clicked_stock = st.query_params.get("show_bias", None)
-        if clicked_stock and clicked_stock in df_res["Symbols"].values:
-            r_z = df_res[df_res["Symbols"] == clicked_stock].iloc[0]
-            _show_stock_bias_modal(
-                sym=str(r_z['Symbols']),
-                bias=str(r_z['Final AI Bias']),
-                context=f"• **ज़ोन स्थिति:** {r_z['State']} {r_z['demand/Supply']}\n• **एंट्री स्तर:** ₹{r_z['Entry Price (Proximal)']:.2f} | **स्टॉपलॉस:** ₹{r_z['Distal Stoploss']:.2f}\n• **टार्गेट:** ₹{r_z['Target Price']:.2f}\n• **कैपिटल क्वांट:** {r_z['Quantity (Capital According)']} शेयर्स",
-                dif_pct=0.25,
-                pcr="1.15",
-                spike=1.0,
-                zone=f"{r_z['State']} {r_z['demand/Supply']}",
-                delivery="68.4%",
-                buildup="Active Zone Setup"
-            )
-
         df_disp = df_res.copy()
         df_disp["Symbols"] = df_disp["_Chart_URL"].fillna("").astype(str)
         df_disp["Futures LTP"] = df_disp["_Fut_Chart_URL"].fillna("").astype(str)
-        df_disp["Final AI Bias"] = df_disp["_Bias_Link_URL"].fillna("").astype(str)
 
         handwritten_cols = [
             "Symbols", "LTP", "Futures LTP", "demand/Supply", "Near Timeframe",
@@ -809,7 +757,7 @@ def _render_zone_tab(settings: dict) -> None:
         st.dataframe(styled, column_config={
             "Symbols": st.column_config.LinkColumn("Symbols", display_text=r".*symbol=NSE%3A([^&#]+).*"),
             "Futures LTP": st.column_config.LinkColumn("Futures LTP", display_text=r".*#price=(.*)"),
-            "Final AI Bias": st.column_config.LinkColumn("Final AI Bias", display_text=df_res["Final AI Bias"].tolist()),
+            "Final AI Bias": st.column_config.TextColumn("Final AI Bias", help="Tab 1 से लिंक्ड संस्थागत बायस"),
             "LTP": st.column_config.NumberColumn("LTP", format="₹%.2f"),
             "Entry Price (Proximal)": st.column_config.NumberColumn("Entry Price (Proximal)", format="₹%.2f"),
             "Distal Stoploss": st.column_config.NumberColumn("Distal Stoploss", format="₹%.2f"),
@@ -876,7 +824,6 @@ def _scan_global_zones_cached(settings: dict) -> list[dict]:
                 tv_sym = item.get("tv", item["id"])
                 chart_url = f"https://in.tradingview.com/chart/?symbol={url_quote(tv_sym, safe='')}&interval=60#display={item['id']}"
                 g_bias = "BUY" if (z.isDemand and chg_pct > 0) else ("SELL" if (not z.isDemand and chg_pct < 0) else "NEUTRAL")
-                bias_click_url = f"?show_global_bias={item['id']}&tab=Global Zone"
 
                 gz_rows.append({
                     "Symbol": item["id"],
@@ -890,7 +837,6 @@ def _scan_global_zones_cached(settings: dict) -> list[dict]:
                     "Target Price": tp_price,
                     "State": z.state,
                     "Final AI Bias": g_bias,
-                    "_Bias_Link_URL": bias_click_url
                 })
         except Exception:
             continue
@@ -912,26 +858,8 @@ def _render_global_zone_tab(settings: dict) -> None:
 
     if res:
         df_gz = pd.DataFrame(res)
-        
-        # Check if URL global bias clicked
-        clicked_g = st.query_params.get("show_global_bias", None)
-        if clicked_g and clicked_g in df_gz["Symbol"].values:
-            r_g = df_gz[df_gz["Symbol"] == clicked_g].iloc[0]
-            _show_stock_bias_modal(
-                sym=str(r_g['Symbol']),
-                bias=str(r_g['Final AI Bias']),
-                context=f"• **ग्लोबल एसेट:** {r_g['Symbol']}\n• **ज़ोन लेवल्स:** {r_g['State']} {r_g['Demand/Supply']}\n• **एंट्री:** {r_g['Entry Price']:.4f} | **स्टॉपलॉस:** {r_g['Distal Stoploss']:.4f}\n• **टार्गेट:** {r_g['Target Price']:.4f}\n• **ग्लोबल मैक्रो सेंटिमेंट:** {r_g['Final AI Bias']}",
-                dif_pct=0.0,
-                pcr="N/A",
-                spike=1.0,
-                zone=f"{r_g['State']} {r_g['Demand/Supply']}",
-                delivery="N/A",
-                buildup="Global Trend Setup"
-            )
-
         df_disp = df_gz.copy()
         df_disp["Symbol"] = df_disp["_Chart_URL"].fillna("").astype(str)
-        df_disp["Final AI Bias"] = df_disp["_Bias_Link_URL"].fillna("").astype(str)
 
         g_cols = ["Symbol", "LTP", "Demand/Supply", "Near Timeframe", "Entry Price", "Distal Stoploss", "Target Price", "State", "Final AI Bias", "_Change_Pct"]
 
@@ -955,7 +883,7 @@ def _render_global_zone_tab(settings: dict) -> None:
 
         st.dataframe(styled, column_config={
             "Symbol": st.column_config.LinkColumn("Symbol", display_text=r".*#display=(.*)"),
-            "Final AI Bias": st.column_config.LinkColumn("Final AI Bias", display_text=df_gz["Final AI Bias"].tolist()),
+            "Final AI Bias": st.column_config.TextColumn("Final AI Bias", help="ग्लोबल मैक्रो सेंटिमेंट व ज़ोन आधारित निर्णय"),
             "LTP": st.column_config.NumberColumn("LTP", format="%.4f"),
             "Entry Price": st.column_config.NumberColumn("Entry Price", format="%.4f"),
             "Distal Stoploss": st.column_config.NumberColumn("Distal Stoploss", format="%.4f"),
@@ -1207,7 +1135,6 @@ def main() -> None:
 
     tab_names = ["NSE ALL FUTURE STOCKS", "Zone", "Global Zone", "News & Events", "Settings"]
     
-    # URL Query parameter to keep user on the exact same tab after refresh
     current_tab = st.query_params.get("tab", "NSE ALL FUTURE STOCKS")
     default_idx = tab_names.index(current_tab) if current_tab in tab_names else 0
 
