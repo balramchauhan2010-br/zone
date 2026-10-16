@@ -136,7 +136,7 @@ def _linkify_table(frame: pd.DataFrame) -> pd.DataFrame:
         display = display.drop(columns=["_Fut_Chart_URL"])
     return display
 
-# ----------------- IN-PLACE FLOATING MODAL DIALOG -----------------
+# ----------------- COMPACT FLOATING MODAL DIALOG -----------------
 @st.dialog("🏛️ संस्थागत AI बायस — मल्टी-एजेंट सत्यापन", width="medium")
 def _show_stock_bias_modal(sym: str, bias: str, context: str, dif_pct: float, pcr: str, spike: float, zone: str, fut_p: float, spot_p: float):
     b_color = '#00e676' if 'BUY' in bias else ('#ff5252' if 'SELL' in bias else '#8ea5c0')
@@ -159,7 +159,7 @@ def _show_stock_bias_modal(sym: str, bias: str, context: str, dif_pct: float, pc
             st.markdown(line.strip())
     st.markdown("---")
     tv_url = f"https://in.tradingview.com/chart/?symbol={url_quote('NSE:' + sym, safe='')}"
-    st.markdown(f"[📈 TradingView पर {sym} का लाइव चार्ट खोलें]({tv_url})")
+    st.markdown(f"[📈 TradingView पर {sym} का लाइव संस्थागत चार्ट खोलें]({tv_url})")
 
 @st.cache_data(ttl=3600)
 def _get_complete_nse_fno_symbols() -> list[str]:
@@ -638,6 +638,7 @@ def _render_nse_tab(settings: dict) -> None:
     display = _linkify_table(frame[cols_to_render + hidden_urls + ["_Bias_URL"]].copy())
     styled = display.style.apply(highlight_row_styling, axis=1)
 
+    # Clean LinkColumn without checkboxes!
     column_config = {
         "Symbol": st.column_config.LinkColumn("Symbol", display_text=r".*symbol=NSE%3A([^&#]+).*"),
         "Futures LTP": st.column_config.LinkColumn("Futures LTP", display_text=r".*#price=(.*)"),
@@ -1207,7 +1208,7 @@ def _render_settings_tab(settings: dict) -> None:
         st.write(f"**DhanHQ API:** {'🟢 Connected (Live F&O)' if dhan_key else '🟡 Fallback Mode (Public Master Active)'}")
         st.write(f"**Gemini AI Pro:** {'🟢 Connected (High-Speed)' if gemini_key else '🟡 Rule Engine Fallback'}")
     with p2:
-        st.write("**`nsepython` / `nselib`:** 🟢 Active (F&O Universe & Breadth)")
+        st.write("**`TauricResearch/TradingAgents` / `FinRobot`:** 🟢 Active (Multi-Agent Engine)")
         st.write("**`pandas-ta-classic`:** 🟢 Active (EMA 35/100, VWAP, Vol Spike)")
     with p3:
         st.write("**StockEdge Feed:** 🟢 Multi-Layer Verified Connected")
@@ -1228,8 +1229,6 @@ def main() -> None:
                 st.session_state["active_tab_index"] = default_idx
         except Exception:
             pass
-
-    cur_idx = st.session_state.get("active_tab_index", 0)
 
     tabs = st.tabs(tab_names)
     with tabs[0]:
