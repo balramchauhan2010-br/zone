@@ -90,6 +90,94 @@ def _load_dotenv() -> None:
 
 _load_dotenv()
 
+# --- Streamlit Cloud secrets → env (flat keys + sectioned TOML, दोनों) --------
+_SECRET_ENV_NAMES = (
+    "DHAN_CLIENT_ID", "DHAN_ACCESS_TOKEN", "DHAN_BASE_URL", "DHAN_MASTER_URL",
+    "GEMINI_API_KEY", "GEMINI_MODEL", "APP_ADMIN_TOKEN", "YAHOO_RESEARCH_ENABLED",
+    "GITHUB_TOKEN", "YAHOO_API_KEY",
+)
+# section → {alias: ENV_NAME}
+_SECTION_ALIASES: dict[str, dict[str, str]] = {
+    "dhan": {"client_id": "DHAN_CLIENT_ID", "clientid": "DHAN_CLIENT_ID",
+             "client": "DHAN_CLIENT_ID", "id": "DHAN_CLIENT_ID",
+             "access_token": "DHAN_ACCESS_TOKEN", "accesstoken": "DHAN_ACCESS_TOKEN",
+             "token": "DHAN_ACCESS_TOKEN", "base_url": "DHAN_BASE_URL",
+             "master_url": "DHAN_MASTER_URL"},
+    "gemini": {"api_key": "GEMINI_API_KEY", "apikey": "GEMINI_API_KEY",
+               "key": "GEMINI_API_KEY", "token": "GEMINI_API_KEY",
+               "model": "GEMINI_MODEL"},
+}
+_SECTION_ALIASES["dhanhq"] = _SECTION_ALIASES["dhan"]
+_SECTION_ALIASES["dhan_hq"] = _SECTION_ALIASES["dhan"]
+_SECTION_ALIASES["dhan_broker"] = _SECTION_ALIASES["dhan"]
+_SECTION_ALIASES["broker"] = _SECTION_ALIASES["dhan"]
+_SECTION_ALIASES["google"] = _SECTION_ALIASES["gemini"]
+_SECTION_ALIASES["llm"] = _SECTION_ALIASES["gemini"]
+_GENERIC_KEYS = {"api_key": "API_KEY", "access_token": "ACCESS_TOKEN",
+                 "client_id": "CLIENT_ID", "token": "TOKEN", "model": "MODEL"}
+
+
+def _apply_streamlit_secrets_robust() -> int:
+    """Streamlit secrets → env (मान env में पहले मौजूद हो तो override नहीं)।
+    दोनों styles support: flat keys (DHAN_CLIENT_ID = "...") और sectioned TOML
+    ([dhan] client_id = "...")। key कभी render/log नहीं होती।"""
+    applied = 0
+    try:
+        secrets = st.secrets
+    except Exception:
+        return 0
+    # 1) flat keys
+    for name in _SECRET_ENV_NAMES:
+        if os.environ.get(name, "").strip():
+            continue
+        try:
+            value = secrets.get(name, "")
+        except Exception:
+            value = ""
+        if value is not None and str(value).strip():
+            os.environ[name] = str(value).strip()
+            applied += 1
+    # 2) sectioned TOML
+    try:
+        keys = list(secrets.keys())
+    except Exception:
+        keys = []
+    for section in keys:
+        try:
+            block = secrets[section]
+        except Exception:
+            continue
+        if not hasattr(block, "keys"):
+            continue
+        sec = str(section).strip().lower()
+        mapping = dict(_SECTION_ALIASES.get(sec, {}))
+        try:
+            for sub in list(block.keys()):
+                mapping.setdefault(str(sub).strip().lower(),
+                                   f"{sec.upper()}_{str(sub).strip().upper()}")
+        except Exception:
+            pass
+        for sub in list(block.keys()):
+            alias = str(sub).strip().lower()
+            env_name = mapping.get(alias)
+            if not env_name:
+                continue
+            try:
+                value = block[sub]
+            except Exception:
+                continue
+            if value is None or not isinstance(value, (str, int, float, bool)):
+                continue
+            text = str(value).strip()
+            if not text or os.environ.get(env_name, "").strip():
+                continue
+            os.environ[env_name] = text
+            applied += 1
+    return applied
+
+
+_SECRETS_APPLIED = _apply_streamlit_secrets_robust()
+
 _HAS_HOST_SECRETS = False
 try:  # host repo का secrets loader (Streamlit Cloud secrets → env)
     from ui.runtime_config import apply_streamlit_secrets as _host_apply_secrets
@@ -97,13 +185,16 @@ try:  # host repo का secrets loader (Streamlit Cloud secrets → env)
     _host_apply_secrets()
     _HAS_HOST_SECRETS = True
 except Exception:
-    try:
-        for _k in list(st.secrets.keys()):
-            _v = st.secrets[_k]
-            if isinstance(_v, str):
-                os.environ.setdefault(_k, _v)
-    except Exception:
-        pass
+    pass
+
+
+def _secret_status() -> dict:
+    """कौन-से secrets मौजूद हैं — सिर्फ़ हाँ/नहीं (कभी key नहीं दिखती)।"""
+    dhan = bool(os.environ.get("DHAN_CLIENT_ID", "").strip()
+                and os.environ.get("DHAN_ACCESS_TOKEN", "").strip())
+    gemini = bool(os.environ.get("GEMINI_API_KEY", "").strip())
+    return {"dhan": dhan, "gemini": gemini, "applied": _SECRETS_APPLIED,
+            "host_loader": _HAS_HOST_SECRETS}
 
 
 # ==============================================================================
@@ -974,6 +1065,7 @@ def _tv_scan(tickers: list[str], url: str = TV_GLOBAL_SCAN,
     except Exception:
         return out
     headers = {"User-Agent": UA, "Content-Type": "application/json"}
+    t0 = time.time()
     for i in range(0, len(tickers), chunk):
         part = tickers[i: i + chunk]
         body = {"symbols": {"tickers": part, "query": {"types": []}}, "columns": list(columns)}
@@ -989,22 +1081,40 @@ def _tv_scan(tickers: list[str], url: str = TV_GLOBAL_SCAN,
                 out[str(row.get("s"))] = {c: v for c, v in zip(columns, vals)}
         except Exception:
             continue
+    if tickers:
+        _record_source("TradingView screener", bool(out),
+                       f"{len(out)}/{len(tickers)} rows · {time.time() - t0:.1f}s",
+                       time.time() - t0)
     return out
 
 
 def _yf_download(tickers: list[str], period: str, interval: str):
-    """Yahoo OHLCV (वास्तविक डेटा, वैकल्पिक dependency)।"""
-    try:
-        import yfinance as yf
-    except Exception:
-        return pd.DataFrame()
+    """Yahoo OHLCV (वास्तविक डेटा) — yfinance के बाद chart-API fallback।"""
     if not tickers:
         return pd.DataFrame()
+    t0 = time.time()
+    data = pd.DataFrame()
     try:
-        return yf.download(tickers, period=period, interval=interval, group_by="ticker",
+        import yfinance as yf
+
+        data = yf.download(tickers, period=period, interval=interval, group_by="ticker",
                            progress=False, threads=True, auto_adjust=False)
-    except Exception:
+    except Exception as exc:
+        _record_source("Yahoo Finance (yfinance)", False, f"{type(exc).__name__}")
+    if data is None or len(data) == 0:
+        frames = _yf_chart_download([t.replace(".NS", "") for t in tickers],
+                                    rng=period if period in ("1mo", "3mo", "6mo", "1y", "2y")
+                                    else "1y", interval=interval, max_symbols=25)
+        if frames:
+            _record_source("Yahoo Finance (chart API fallback)", True,
+                           f"{len(frames)} symbols · {time.time() - t0:.1f}s", time.time() - t0)
+            return frames
+        _record_source("Yahoo Finance", False, "कोई OHLCV नहीं मिला", time.time() - t0)
         return pd.DataFrame()
+    _record_source("Yahoo Finance (yfinance)", True,
+                   f"{len(tickers)} tickers · {period}/{interval} · {time.time() - t0:.1f}s",
+                   time.time() - t0)
+    return data
 
 
 _TF_RULES = {
@@ -1093,6 +1203,299 @@ def _normalise_ohlcv(block) -> pd.DataFrame | None:
         return None
 
 
+
+# ==============================================================================
+# 4B) SOURCE HEALTH  (कौन-सा source ज़िंदा है, कितना समय लगा, क्या error हुआ)
+# ==============================================================================
+
+_SOURCE_STATUS: dict[str, dict] = {}
+_ARTIFACTS: dict[str, Any] = {}      # भारी objects (DataFrame/Zone) — cache के बाहर
+
+
+def _record_source(name: str, ok: bool, detail: str = "", seconds: float | None = None) -> bool:
+    _SOURCE_STATUS[name] = {
+        "ok": bool(ok),
+        "detail": detail[:220],
+        "seconds": round(seconds, 2) if seconds is not None else None,
+        "at": datetime.now(IST).strftime("%H:%M:%S"),
+    }
+    return bool(ok)
+
+
+def source_health_rows() -> list[dict]:
+    rows = []
+    try:
+        _sec = _secret_status()
+        rows.append({
+            "Source": "DhanHQ v2 (live futures/OI)",
+            "Status": "🟢 उपलब्ध" if _sec["dhan"] else "🔴 उपलब्ध नहीं",
+            "Latency (s)": NA,
+            "Detail": ("क्रेडेंशियल मौजूद — live quotes/candles/OI चालू"
+                       if _sec["dhan"] else
+                       "क्रेडेंशियल नहीं (DHAN_CLIENT_ID/DHAN_ACCESS_TOKEN) — "
+                       "TradingView + NSE bhavcopy से चल रहा है"),
+            "Checked": NA,
+        })
+    except Exception:
+        pass
+    for name, info in _SOURCE_STATUS.items():
+        rows.append({
+            "Source": name,
+            "Status": "🟢 उपलब्ध" if info.get("ok") else "🔴 उपलब्ध नहीं",
+            "Latency (s)": (f"{float(info.get('seconds')):.2f}s"
+                             if info.get("seconds") is not None else NA),
+            "Detail": info.get("detail") or NA,
+            "Checked": info.get("at") or NA,
+        })
+    return rows
+
+
+# ---- Yahoo chart API fallback (yfinance न चले तो, बिना crumb के) ------------
+def _yf_chart_download(symbols: list[str], rng: str = "1y", interval: str = "1d",
+                       max_symbols: int = 40) -> dict:
+    """query1.finance.yahoo.com chart API — yfinance fail होने पर OHLCV fallback।"""
+    out: dict[str, pd.DataFrame] = {}
+    try:
+        import httpx
+    except Exception:
+        return out
+    for sym in list(symbols)[:max_symbols]:
+        url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}.NS"
+               f"?range={rng}&interval={interval}")
+        try:
+            resp = httpx.get(url, headers={"User-Agent": UA}, timeout=12.0,
+                             follow_redirects=True)
+            if resp.status_code != 200:
+                continue
+            result = (resp.json().get("chart") or {}).get("result") or []
+            if not result:
+                continue
+            data = result[0]
+            ts = data.get("timestamp") or []
+            quote = ((data.get("indicators") or {}).get("quote") or [{}])[0]
+            if not ts or not quote:
+                continue
+            idx = pd.to_datetime(ts, unit="s", utc=True).tz_convert("Asia/Kolkata")
+            frame = pd.DataFrame({
+                "open": quote.get("open"), "high": quote.get("high"),
+                "low": quote.get("low"), "close": quote.get("close"),
+                "volume": quote.get("volume") or [0] * len(ts),
+            }, index=idx)
+            frame = frame.dropna(subset=["close"])
+            if len(frame):
+                out[sym] = frame
+        except Exception:
+            continue
+    return out
+
+
+# ---- FREE RSS NEWS (कोई API key नहीं, Cloud पर भी चलता है) ------------------
+NEWS_FEEDS: list[tuple[str, str]] = [
+    ("Moneycontrol", "https://www.moneycontrol.com/news/india/marketnews/rssfeed.xml"),
+    ("ET Markets", "https://economictimes.indiatimes.com/rssfeedstopstories.cms"),
+    ("Business Standard", "https://www.business-standard.com/finance/markets/rss"),
+    ("Mint Markets", "https://www.livemint.com/rss/markets"),
+    ("CNBC-TV18", "https://www.cnbctv18.com/rss/market"),
+]
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def fetch_rss_news(limit: int = 15) -> list[dict]:
+    """मुक्त RSS स्रोतों से बाज़ार समाचार (stdlib XML — कोई dependency नहीं)।"""
+    import xml.etree.ElementTree as ET
+
+    items: list[dict] = []
+    ok_feeds = 0
+    for name, url in NEWS_FEEDS:
+        try:
+            import httpx
+
+            resp = httpx.get(url, headers={"User-Agent": UA}, timeout=8.0,
+                             follow_redirects=True)
+            if resp.status_code != 200:
+                continue
+            root = ET.fromstring(resp.content)
+            count = 0
+            for item in root.iter("item"):
+                title = (item.findtext("title") or "").strip()
+                link = (item.findtext("link") or "").strip()
+                published = (item.findtext("pubDate") or "").strip()
+                if not title:
+                    continue
+                items.append({"source": name, "title": title, "link": link,
+                              "published": published})
+                count += 1
+                if count >= 6:
+                    break
+            if count:
+                ok_feeds += 1
+        except Exception:
+            continue
+    _record_source("RSS News (मुक्त स्रोत)", ok_feeds > 0,
+                   f"{ok_feeds}/{len(NEWS_FEEDS)} फ़ीड उपलब्ध, {len(items)} headline")
+    return items[:limit]
+
+
+# ---- GitHub raw catalog fallback (आपके repo का data फ़ाइल) -------------------
+GITHUB_RAW_CATALOG = ("https://raw.githubusercontent.com/balramchauhan2010-br/zone/"
+                       "main/data/global_instruments.json")
+
+
+def _catalog_from_github() -> list[dict]:
+    """host repo की local catalog न हो तो GitHub raw से (free, कोई key नहीं)।"""
+    try:
+        import httpx
+
+        resp = httpx.get(GITHUB_RAW_CATALOG, headers={"User-Agent": UA},
+                         timeout=10.0, follow_redirects=True)
+        if resp.status_code != 200:
+            _record_source("GitHub raw catalog", False, f"HTTP {resp.status_code}")
+            return []
+        payload = resp.json()
+        items = payload if isinstance(payload, list) else (payload.get("instruments") or [])
+        _record_source("GitHub raw catalog", True,
+                       f"{len(items)} instruments (raw.githubusercontent.com)")
+        return [i for i in items if isinstance(i, dict)]
+    except Exception as exc:
+        _record_source("GitHub raw catalog", False, f"{type(exc).__name__}")
+        return []
+
+# ---- NSE F&O bhavcopy (NSE official EOD: futures close/OI, spot, option chain) --
+_NSE_FO_BHAV = ("https://nsearchives.nseindia.com/content/fo/"
+                "BhavCopy_NSE_FO_0_0_0_{ds}_F_0000.csv.zip")
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def _nse_fo_bhavcopy() -> dict:
+    """NSE की official F&O bhavcopy — front-month futures close, OI, OI change,
+    underlying (spot) price और option-chain OI (PCR) — सब कुछ वास्तविक।
+
+    TradingView जिस symbol पर futures नहीं देता (लगभग 40%), वहाँ यह काम आता है।
+    """
+    empty = {"date": "", "fut": {}, "spot": {}, "opt": {}}
+    try:
+        import httpx
+    except Exception:
+        return empty
+    today = datetime.now().date()
+    payload = None
+    for back in range(0, 6):
+        ds = (today - timedelta(days=back)).strftime("%Y%m%d")
+        url = _NSE_FO_BHAV.format(ds=ds)
+        try:
+            resp = httpx.get(url, headers={"User-Agent": UA}, timeout=30.0,
+                             follow_redirects=True)
+            if resp.status_code == 200 and len(resp.content) > 20000:
+                payload = (ds, resp.content)
+                break
+        except Exception:
+            continue
+    if not payload:
+        _record_source("NSE F&O bhavcopy", False, "कोई फ़ाइल नहीं मिली")
+        return empty
+    ds, content = payload
+    out = {"date": f"{ds[:4]}-{ds[4:6]}-{ds[6:8]}", "fut": {}, "spot": {}, "opt": {}}
+    try:
+        import csv
+        import io
+        import zipfile
+
+        zf = zipfile.ZipFile(io.BytesIO(content))
+        name = zf.namelist()[0]
+        text = zf.read(name).decode("utf-8", "replace")
+        rows = list(csv.DictReader(io.StringIO(text)))
+    except Exception as exc:
+        _record_source("NSE F&O bhavcopy", False, f"parse: {type(exc).__name__}")
+        return out
+
+    groups: dict[tuple, list] = {}
+    for r in rows:
+        sym = str(r.get("TckrSymb") or "").strip().upper()
+        if not sym:
+            continue
+        itype = str(r.get("FinInstrmTp") or "").strip().upper()
+        optn = str(r.get("OptnTp") or "XX").strip().upper()
+        if itype in ("STF", "IDF"):
+            kind = "FUT"                      # stock / index futures
+        elif itype in ("STO", "IDO"):
+            kind = "FUT" if optn == "XX" else "OPT"   # equity / index options
+        else:
+            continue
+        exp = str(r.get("XpryDt") or "").strip()
+        groups.setdefault((sym, kind, exp), []).append(r)
+
+    today_iso = today.isoformat()
+    front: dict[tuple, str] = {}
+    for (sym, kind, exp) in groups:
+        key = (sym, kind)
+        cur = front.get(key)
+        if cur is None:
+            front[key] = exp
+        else:
+            live = [e for e in (cur, exp) if e and e >= today_iso]
+            front[key] = min(live) if live else max(cur, exp)
+
+    for (sym, kind, exp), rlist in groups.items():
+        if front.get((sym, kind)) != exp:
+            continue
+        if kind == "FUT":
+            r = rlist[0]
+            close = _f(r.get("ClsPric"))
+            prev = _f(r.get("PrvsClsgPric"))
+            oi = _f(r.get("OpnIntrst"))
+            oi_chg = _f(r.get("ChngInOpnIntrst"))
+            vol = _f(r.get("TtlTradgVol"))
+            out["fut"][sym] = {
+                "close": close, "prev_close": prev, "oi": oi, "oi_chg": oi_chg,
+                "volume": vol, "expiry": exp,
+                "high": _f(r.get("HghPric")), "low": _f(r.get("LwPric")),
+            }
+            spot = _f(r.get("UndrlygPric"))
+            if spot:
+                out["spot"][sym] = spot
+        else:
+            ce_oi = pe_oi = 0.0
+            ce_vol = pe_vol = 0.0
+            for r in rlist:
+                oi = _f(r.get("OpnIntrst")) or 0.0
+                vol = _f(r.get("TtlTradgVol")) or 0.0
+                ot = str(r.get("OptnTp") or "").strip().upper()
+                if ot == "CE":
+                    ce_oi += oi
+                    ce_vol += vol
+                elif ot == "PE":
+                    pe_oi += oi
+                    pe_vol += vol
+            out["opt"][sym] = {"ce_oi": ce_oi, "pe_oi": pe_oi, "ce_vol": ce_vol,
+                               "pe_vol": pe_vol, "expiry": exp}
+    _record_source("NSE F&O bhavcopy", bool(out["fut"]),
+                   f"{len(out['fut'])} futures · {len(out['opt'])} option chains · {out['date']}")
+    return out
+
+
+def _bhavcopy_futures(symbols: list[str]) -> dict[str, dict]:
+    """bhavcopy → {SYMBOL: {...}} (सिर्फ़ माँगे गए symbol)।"""
+    try:
+        data = _nse_fo_bhavcopy()
+    except Exception:
+        return {}
+    fut = data.get("fut") or {}
+    spot = data.get("spot") or {}
+    opt = data.get("opt") or {}
+    out: dict[str, dict] = {}
+    for sym in symbols:
+        key = str(sym).strip().upper()
+        row = fut.get(key)
+        if not row:
+            continue
+        item = dict(row)
+        item["spot"] = spot.get(key)
+        item["opt"] = opt.get(key) or {}
+        item["date"] = data.get("date")
+        out[key] = item
+    return out
+
+
 # ==============================================================================
 # 6) UNIFIED DATA SERVICE
 # ==============================================================================
@@ -1137,6 +1540,7 @@ class _UnifiedService:
 
     def __init__(self, cache_ttl: float = 300.0) -> None:
         self._cache = _TTLCache(cache_ttl)
+        self._cache_long = _TTLCache(6 * 3600)   # universe/catalog — 6 घंटे
         self._universe: list[str] = []
         self._universe_src = "universe unavailable"
         self._contracts: list[dict] = []
@@ -1158,14 +1562,18 @@ class _UnifiedService:
         provider = self._dhan_provider()
         if provider is not None:
             try:
-                return provider.status()
+                info = provider.status()
+                _record_source("DhanHQ API", bool(info.get("credentials_configured")),
+                               str(info.get("status") or "")[:120])
+                return info
             except Exception:
                 pass
+        _record_source("DhanHQ API", False, "credentials missing (public master only)")
         return {"status": "NOT_CONFIGURED", "note": "Dhan credentials missing"}
 
     # -------------------------------------------------------------- universe
     def _load_universe(self) -> None:
-        cached = self._cache.get("universe")
+        cached = self._cache_long.get("universe")
         if cached:
             self._universe, self._universe_src, self._contracts = cached
             return
@@ -1187,11 +1595,13 @@ class _UnifiedService:
             symbols, source = self._universe_from_public_master()
 
         self._universe, self._universe_src, self._contracts = symbols, source, contracts
-        self._cache.set("universe", (symbols, source, contracts))
+        self._cache_long.set("universe", (symbols, source, contracts))
+        _record_source("NSE F&O universe (Dhan master)", bool(symbols),
+                       f"{len(symbols)} symbols · {source}")
 
     def _universe_from_public_master(self) -> tuple[list[str], str]:
         """Dhan का public scrip-master CSV (बिना token) — वास्तविक NSE F&O universe।"""
-        cached = self._cache.get("universe_public")
+        cached = self._cache_long.get("universe_public")
         if cached:
             return cached
         symbols: list[str] = []
@@ -1225,9 +1635,10 @@ class _UnifiedService:
                     sel = sel.sort_values(["_sym", "_exp"], kind="stable")
                     sel = sel.groupby("_sym", sort=True, group_keys=False).head(1)
                     symbols = sorted({s for s in sel["_sym"] if s})
-        except Exception:
+        except Exception as exc:
             symbols = []
-        self._cache.set("universe_public", (symbols, source))
+            _record_source("Dhan scrip master (public CSV)", False, f"{type(exc).__name__}")
+        self._cache_long.set("universe_public", (symbols, source))
         return symbols, source
 
     def get_universe(self) -> tuple[list[str], str]:
@@ -1277,31 +1688,65 @@ class _UnifiedService:
                         continue
                     per[sym] = _resample(norm, tf)
                 bundle[tf] = per
+            got = sum(len(v or {}) for v in bundle.values())
+            if got:
+                _record_source("DhanHQ candles", True, f"{got} candle frames (live API)")
+            # Dhan से कम/none मिला → token invalid या API down → Yahoo से भरें
+            missing = [s for s in symbols
+                       if not any((bundle.get(tf) or {}).get(s) is not None for tf in tfs)]
+            if missing:
+                try:
+                    yf_bundle = self._bundle_yahoo(missing, tfs)
+                except Exception:
+                    yf_bundle = {}
+                for tf_item in tfs:
+                    for sym, blk in (yf_bundle.get(tf_item) or {}).items():
+                        bundle.setdefault(tf_item, {}).setdefault(sym, blk)
         else:
-            # base feed एक-एक बार download → सभी TF resample (तेज़)
-            wanted: dict[str, set] = {}
-            for tf_item in tfs:
-                wanted.setdefault(_BASE_FEED.get(tf_item, "1d"), set()).add(tf_item)
-            raw: dict[str, dict] = {}
-            for base in wanted:
-                data = _yf_download([f"{s}.NS" for s in symbols],
-                                    _YF_PERIOD.get(base, "1y"),
-                                    _YF_INTERVAL.get(base, "1d"))
-                frames: dict[str, pd.DataFrame] = {}
-                for sym in symbols:
-                    blk = _normalise_ohlcv(_extract_block(data, f"{sym}.NS"))
-                    if blk is not None and not blk.empty:
-                        frames[sym] = blk
-                raw[base] = frames
-            for tf_item in tfs:
-                base = _BASE_FEED.get(tf_item, "1d")
-                per_tf: dict[str, pd.DataFrame] = {}
-                for sym, blk in (raw.get(base) or {}).items():
-                    out = _resample(blk, tf_item)
-                    if out is not None and not out.empty:
-                        per_tf[sym] = out
-                bundle[tf_item] = per_tf
+            bundle = self._bundle_yahoo(symbols, tfs)
+        if not any((bundle.get(tf) or {}) for tf in tfs):
+            _record_source("Candles (OHLCV)", False, "कोई candle नहीं मिली")
         self._cache.set(key, bundle)
+        return bundle
+
+    def _bundle_yahoo(self, symbols: list[str], tfs: list[str]) -> dict:
+        """Yahoo OHLCV (yfinance → chart-API fallback) → base feed → resample।"""
+        bundle: dict[str, dict] = {}
+        # base feed एक-एक बार download → सभी TF resample (तेज़)
+        wanted: dict[str, set] = {}
+        for tf_item in tfs:
+            wanted.setdefault(_BASE_FEED.get(tf_item, "1d"), set()).add(tf_item)
+        raw: dict[str, dict] = {}
+        for base in wanted:
+            data = _yf_download([f"{s}.NS" for s in symbols],
+                                _YF_PERIOD.get(base, "1y"),
+                                _YF_INTERVAL.get(base, "1d"))
+            frames: dict[str, pd.DataFrame] = {}
+            for sym in symbols:
+                blk = _normalise_ohlcv(_extract_block(data, f"{sym}.NS"))
+                if blk is not None and not blk.empty:
+                    frames[sym] = blk
+            if not frames:
+                # yfinance fail → per-symbol chart API (सीमित, धीमा लेकिन भरोसेमंद)
+                fallback = _yf_chart_download(
+                    [s for s in symbols][:25],
+                    rng=({"15m": "1mo", "60m": "6mo", "1d": "2y"}.get(base, "1y")),
+                    interval=({"15m": "15m", "60m": "60m", "1d": "1d"}.get(base, "1d")),
+                    max_symbols=25)
+                for sym, blk in fallback.items():
+                    frames[sym] = blk
+                if fallback:
+                    _record_source(f"Yahoo chart API ({base})", True,
+                                   f"{len(fallback)} symbols (yfinance fail हुआ)")
+            raw[base] = frames
+        for tf_item in tfs:
+            base = _BASE_FEED.get(tf_item, "1d")
+            per_tf: dict[str, pd.DataFrame] = {}
+            for sym, blk in (raw.get(base) or {}).items():
+                out = _resample(blk, tf_item)
+                if out is not None and not out.empty:
+                    per_tf[sym] = out
+            bundle[tf_item] = per_tf
         return bundle
 
     @staticmethod
@@ -1370,15 +1815,43 @@ class _UnifiedService:
             out[symbol] = snap
         return out
 
+    @staticmethod
+    def _tv_fut_tickers(symbols: list[str]) -> list[str]:
+        """TradingView futures ticker — 'NSE:SYM1!' (dash → underscore वाला rule)।"""
+        out: list[str] = []
+        for sym in symbols:
+            base = str(sym).strip().upper()
+            variants = [f"NSE:{base}1!", f"NSE:{base.replace('-', '_')}1!"]
+            if "&" in base:
+                variants.append(f"NSE:{base.replace('&', '')}1!")
+            for v in variants:
+                if v not in out:
+                    out.append(v)
+        return out
+
     def _snapshots_public(self, symbols: list[str]) -> dict:
-        """TradingView futures/spot (delayed) + NSE public (best effort)।"""
+        """TradingView futures/spot (delayed) + NSE official bhavcopy (EOD)।"""
         out: dict[str, SymbolSnapshot] = {}
-        fut_rows = _tv_scan([f"NSE:{s}1!" for s in symbols], TV_GLOBAL_SCAN, TV_FUT_COLUMNS)
+        fut_tickers = self._tv_fut_tickers(symbols)
+        fut_rows = _tv_scan(fut_tickers, TV_GLOBAL_SCAN, TV_FUT_COLUMNS)
         spot_rows = _tv_scan([f"NSE:{s}" for s in symbols], TV_INDIA_SCAN, TV_SPOT_COLUMNS)
+        bh = _bhavcopy_futures(symbols)
+        bh_date = ""
+        try:
+            bh_date = str((_nse_fo_bhavcopy() or {}).get("date") or "")
+        except Exception:
+            bh_date = ""
         delay = None
         for symbol in symbols:
-            fut = fut_rows.get(f"NSE:{symbol}1!") or {}
+            sym_key = str(symbol).strip().upper()
+            fut = {}
+            for cand in (f"NSE:{sym_key}1!", f"NSE:{sym_key.replace('-', '_')}1!",
+                         f"NSE:{sym_key.replace('&', '')}1!"):
+                if cand in fut_rows:
+                    fut = fut_rows[cand]
+                    break
             spot = spot_rows.get(f"NSE:{symbol}") or {}
+            b = bh.get(sym_key) or {}
             snap = SymbolSnapshot(symbol=symbol)
             snap.futures_ltp = _f(fut.get("close"))
             snap.futures_change_pct = _f(fut.get("change"))
@@ -1395,6 +1868,38 @@ class _UnifiedService:
                 sources.append("TradingView screener (futures, ~15 min delayed)")
             if snap.spot is not None:
                 sources.append("TradingView screener (spot)")
+            # --- NSE official bhavcopy (TradingView जहाँ futures नहीं देता) -----
+            if b:
+                bh_label = f"NSE F&O bhavcopy ({bh_date or 'EOD'}, official)"
+                if snap.futures_ltp is None and b.get("close"):
+                    snap.futures_ltp = b.get("close")
+                    prev = b.get("prev_close")
+                    if prev:
+                        snap.futures_change_pct = round(
+                            (float(b["close"]) - float(prev)) / float(prev) * 100.0, 2)
+                    snap.expiry = str(b.get("expiry") or "")
+                    if b.get("oi") is not None:
+                        snap.futures_oi = b.get("oi")
+                        oi_chg = b.get("oi_chg")
+                        base_oi = float(b.get("oi") or 0) - float(oi_chg or 0)
+                        if oi_chg is not None and base_oi:
+                            snap.futures_oi_change_pct = round(
+                                float(oi_chg) / base_oi * 100.0, 2)
+                    if b.get("volume"):
+                        snap.volume = int(float(b["volume"]))
+                    sources.append(bh_label)
+                if snap.spot is None and b.get("spot"):
+                    snap.spot = b.get("spot")
+                    sources.append(bh_label)
+                opt = b.get("opt") or {}
+                ce_oi = opt.get("ce_oi") or 0
+                pe_oi = opt.get("pe_oi") or 0
+                if ce_oi or pe_oi:
+                    snap.ce_oi = int(ce_oi)
+                    snap.pe_oi = int(pe_oi)
+                    if ce_oi:
+                        snap.pcr = round(pe_oi / ce_oi, 3)
+                    sources.append(f"Option chain (NSE bhavcopy, {opt.get('expiry') or ''})")
             snap.sources = sources
             # Delivery % / Option chain — NSE public (datacenter IP पर अक्सर blocked)
             delivery = _nse_get_json("/api/quote-equity", {"symbol": symbol}, timeout=6.0)
@@ -1433,6 +1938,8 @@ class _UnifiedService:
             if name in ("DXY", "US10Y"):
                 bias += 1 if chg > 0 else (-1 if chg < 0 else 0)
             lines.append(f"{name}: {p0:,.2f} ({chg:+.2f}%)")
+        _record_source("Macro (DXY/US10Y/Crude/Gold/NIFTY)", bool(numbers),
+                       f"{len(numbers)} series · Yahoo (delayed)")
         result = {"lines": lines, "bias": bias, "changes": numbers,
                   "source": "Yahoo Finance (delayed)"}
         self._cache.set("macro", result)
@@ -1450,6 +1957,8 @@ class _UnifiedService:
             fii_net = _f(str(row.get("FII_Net", "")).replace(",", ""))
             dii_net = _f(str(row.get("DII_Net", "")).replace(",", ""))
             date_text = str(row.get("Date") or row.get("date") or "") or None
+        _record_source("NSE FII/DII", fii_net is not None,
+                       f"तिथि {date_text}" if date_text else "इस IP पर NSE route बंद")
         result = {"fii_net": fii_net, "dii_net": dii_net, "date": date_text,
                   "source": "NSE FII/DII live feed"}
         self._cache.set("fii", result)
@@ -1497,6 +2006,7 @@ class _UnifiedService:
                         parts.append(f"{label}: {value}")
         if parts:
             status = " · ".join(parts[:4])
+        _record_source("NSE Market Status", bool(parts), status)
         self._cache.set("mstatus", status)
         return status
 
@@ -1619,6 +2129,33 @@ def _global_instruments() -> list[dict[str, str]]:
                     return rows
         except Exception:
             pass
+    # host catalog नहीं → आपके GitHub repo का raw JSON (free, कोई key नहीं)
+    try:
+        gh_items = _catalog_from_github()
+    except Exception:
+        gh_items = []
+    if gh_items:
+        rows = []
+        for item in gh_items:
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("id") or item.get("symbol") or "").strip()
+            if not symbol:
+                continue
+            alias = _ALIAS.get(symbol.upper(), ("", ""))
+            ticker = str(item.get("provider_symbol") or item.get("yahoo_ticker")
+                          or item.get("ticker") or alias[0] or "").strip()
+            tv = str(item.get("tv_symbol") or item.get("tradingview")
+                     or alias[1] or symbol)
+            if not ticker:
+                continue
+            rows.append({"id": symbol, "name": str(item.get("display_name")
+                                                    or item.get("name") or symbol),
+                         "ticker": ticker, "tv": tv,
+                         "market": str(item.get("asset_class") or "GLOBAL"),
+                         "status": str(item.get("status") or "")})
+        if rows:
+            return rows
     return [dict(item) for item in _FALLBACK_GLOBAL]
 
 
@@ -1788,10 +2325,17 @@ def _layer_status() -> str:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _build_master_frame(symbols: tuple[str, ...], tf: str, settings_json: str) -> pd.DataFrame:
-    """वास्तविक OHLCV स्कैन + technicals + ज़ोन (कोई काल्पनिक आँकड़ा नहीं)।"""
+    """वास्तविक OHLCV स्कैन + technicals + ज़ोन।
+
+    ⚠️ cache में सिर्फ़ plain (picklable) values जाते हैं — भारी objects
+    (DataFrame / Zone) `_ARTIFACTS` में रहते हैं। इससे Streamlit Cloud पर
+    `UnserializableReturnValueError` नहीं आता और pickling भी तेज़ रहती है।
+    """
     settings = json.loads(settings_json)
     bundle = SERVICE.get_bundle(symbols, [tf])
     lots = {c.get("symbol"): c.get("lot_size") for c in SERVICE.get_contracts()}
+    art_df: dict[str, Any] = {}
+    art_zone: dict[str, Any] = {}
     rows = []
     for sym in symbols:
         df = SERVICE.frame(bundle, tf, sym)
@@ -1809,8 +2353,9 @@ def _build_master_frame(symbols: tuple[str, ...], tf: str, settings_json: str) -
             "VWAP Signal": ind.get("vwap_signal") or NA,
             "Zone Signal": NA,
             "Live Signals Highlight": "",
-            "_df": df, "_zone": None, "_ind": ind, "_lot_size": lots.get(sym),
+            "_ind_keys": sorted(ind.keys()), "_lot_size": lots.get(sym),
         }
+        art_df[sym] = df
         if df is not None and len(df) >= 12:
             try:
                 zones = scan_zones(df[["open", "high", "low", "close", "volume"]].copy(),
@@ -1819,7 +2364,7 @@ def _build_master_frame(symbols: tuple[str, ...], tf: str, settings_json: str) -
                 zone, dist = pick_nearest(active, float(df["close"].iloc[-1]))
                 if zone is not None:
                     kind = "DEMAND" if zone.isDemand else "SUPPLY"
-                    row["_zone"] = zone
+                    art_zone[sym] = zone
                     extra = ""
                     if getattr(zone, "score10", None) is not None:
                         extra = f" · score {zone.score10}/10"
@@ -1841,6 +2386,7 @@ def _build_master_frame(symbols: tuple[str, ...], tf: str, settings_json: str) -
             tags.append(row["Live Signals Highlight"])
         row["Live Signals Highlight"] = " | ".join(tags)
         rows.append(row)
+    _ARTIFACTS[f"master::{tf}::{abs(hash(tuple(symbols)))}"] = {"df": art_df, "zone": art_zone}
     return pd.DataFrame(rows)
 
 
@@ -1891,19 +2437,8 @@ def _enrich_frame(frame: pd.DataFrame, limit: int) -> pd.DataFrame:
         if snap.pe_oi is not None:
             frame.at[idx, "PE Total OI"] = f"{int(snap.pe_oi):,}"
 
-        oi_chg = snap.futures_oi_change_pct
-        fchg = snap.futures_change_pct
-        if oi_chg is not None and fchg is not None:
-            if fchg > 0.15 and oi_chg > 0:
-                frame.at[idx, "Buildup Classification"] = "Long Buildup"
-            elif fchg < -0.15 and oi_chg > 0:
-                frame.at[idx, "Buildup Classification"] = "Short Buildup"
-            elif fchg > 0.15 and oi_chg < 0:
-                frame.at[idx, "Buildup Classification"] = "Short Covering"
-            elif fchg < -0.15 and oi_chg < 0:
-                frame.at[idx, "Buildup Classification"] = "Long Unwinding"
-            else:
-                frame.at[idx, "Buildup Classification"] = "Neutral"
+        frame.at[idx, "Buildup Classification"] = _buildup_label(
+            snap.futures_change_pct, snap.futures_oi_change_pct)
 
         frame.at[idx, "Data Source"] = snap.source_label()
     return frame
@@ -2272,42 +2807,170 @@ _show_modal = _make_modal_decorator()(_modal_body)
 # 7) TAB 1 — NSE ALL FUTURE STOCKS
 # ==============================================================================
 
+@st.cache_data(ttl=60, show_spinner=False)
+def _buildup_label(fchg: float | None, oi_chg: float | None) -> str:
+    """Price + OI behaviour → build-up classification (कोई काल्पनिक डेटा नहीं)।"""
+    if fchg is None or oi_chg is None:
+        return NA
+    if fchg > 0.15 and oi_chg > 0:
+        return "Long Buildup"
+    if fchg < -0.15 and oi_chg > 0:
+        return "Short Buildup"
+    if fchg > 0.15 and oi_chg < 0:
+        return "Short Covering"
+    if fchg < -0.15 and oi_chg < 0:
+        return "Long Unwinding"
+    return "Neutral"
+
+
+def _quick_quotes_frame(symbols: tuple[str, ...]) -> pd.DataFrame:
+    """⚡ त्वरित scan — सिर्फ़ TradingView/Dhan quotes (कोई candle/ज़ोन नहीं) → 2-5 सेकंड।"""
+    snaps = SERVICE.get_snapshots(list(symbols))
+    rows = []
+    for sym in symbols:
+        snap = snaps.get(sym) or SymbolSnapshot(symbol=sym)
+        fut = snap.futures_ltp
+        spot = snap.spot
+        dif = ((fut - spot) / spot * 100.0) if (fut and spot) else None
+        rows.append({
+            "Symbol": sym,
+            "Spot LTP": spot,
+            "Spot Change %": round(snap.spot_change_pct, 2) if snap.spot_change_pct is not None else 0.0,
+            "Futures LTP": f"₹{fut:,.2f}" if fut else NA,
+            "Dif. %": f"{dif:+.2f}%" if dif is not None else NA,
+            "Futures Change %": f"{snap.futures_change_pct:+.2f}%" if snap.futures_change_pct is not None else NA,
+            "Futures OI": f"{int(snap.futures_oi):,}" if snap.futures_oi else NA,
+            "Futures OI Change %": (f"{snap.futures_oi_change_pct:+.2f}%"
+                                    if snap.futures_oi_change_pct is not None else NA),
+            "Selected-Timeframe Volume": NA,
+            "Volume Spike Ratio": NA,
+            "Latest Verified Delivery %": NA,
+            "PCR": f"{snap.pcr:.2f}" if snap.pcr is not None else NA,
+            "CE Total OI": f"{int(snap.ce_oi):,}" if snap.ce_oi is not None else NA,
+            "PE Total OI": f"{int(snap.pe_oi):,}" if snap.pe_oi is not None else NA,
+            "Buildup Classification": _buildup_label(snap.futures_change_pct,
+                                                    snap.futures_oi_change_pct),
+            "EMA 35 Signal": NA, "EMA 100 Signal": NA, "VWAP Signal": NA,
+            "Zone Signal": NA, "Live Signals Highlight": "",
+            "Data Source": snap.source_label(),
+            "_Enrich": snap,
+        })
+    return pd.DataFrame(rows)
+
+
+def _show_source_health() -> None:
+    """कौन-सा source ज़िंदा है — उपयोगकर्ता को तुरंत दिखे।"""
+    rows = source_health_rows()
+    if not rows:
+        return
+    with st.expander("🔌 डेटा-स्रोत स्वास्थ्य (इस स्कैन में क्या fetch हुआ)", expanded=False):
+        try:
+            st.dataframe(pd.DataFrame(rows).astype(str), hide_index=True, **df_layout(st))
+        except Exception:
+            st.dataframe(pd.DataFrame(rows).astype(str), hide_index=True)
+
+
+def _zone_from_row(row) -> Any:
+    """flat zone columns → _Zone object (modal के लिए)।"""
+    try:
+        return _Zone(state=str(row.get("_ZoneState", NA)),
+                     isDemand=bool(row.get("_ZoneDemand", True)),
+                     proxVal=float(row.get("_ZoneProx") or 0.0),
+                     distVal=float(row.get("_ZoneDist") or 0.0),
+                     tf=str(row.get("Near Timeframe", "1h")),
+                     pattern=row.get("_ZonePattern"),
+                     score10=row.get("_ZoneScore"),
+                     slVal=_f(row.get("_ZoneSL")),
+                     tpVal=_f(row.get("_ZoneTP")),
+                     source=str(row.get("_ZoneSource", "") or ""))
+    except Exception:
+        return None
+
+
 def _render_nse_tab(settings: dict) -> None:
+    """मास्टर टैब — खुलते ही कुछ fetch नहीं (instant open), स्कैन बटन से।"""
     selected_tf = settings.get("selected_tf", "Daily")
     universe, universe_src = SERVICE.get_universe()
-    limit = int(settings.get("scan_limit", 0) or 0)
-    symbols = tuple(universe[:limit] if limit > 0 and universe else universe)
-    if not symbols:
+    if not universe:
         st.warning("F&O universe उपलब्ध नहीं (Dhan scrip master unreachable) — "
-                   "टैब 5 (Settings) में provider status देखें।")
+                   "Settings tab में provider status देखें।")
         return
 
-    c1, c2, c3 = st.columns([2.2, 1.4, 2.4])
-    with c1:
-        st.markdown(f"### NSE ALL FUTURES — LIVE SCAN ({len(symbols)} स्टॉक्स)")
-        st.caption(f"यूनिवर्स: {universe_src} · layers: {_layer_status()}")
-    with c2:
-        if st.button("↻ Refresh scanner", type="primary", use_container_width=True):
-            st.cache_data.clear()
-            try:
-                SERVICE.clear_cache()
-            except Exception:
-                pass
-            st.rerun()
-    with c3:
-        new_tf = st.selectbox("Timeframe:", ALL_TIMEFRAMES,
-                              index=ALL_TIMEFRAMES.index(selected_tf) if selected_tf in ALL_TIMEFRAMES else 8,
-                              key="tab1_tf_select", label_visibility="collapsed")
-        if new_tf != selected_tf:
-            st.session_state.analysis_settings["selected_tf"] = new_tf
-            st.rerun()
+    st.markdown("### NSE ALL FUTURES — LIVE SCAN")
+    st.caption(f"यूनिवर्स: **{universe_src}** · {len(universe)} स्टॉक्स · {engine_status_line()}")
 
-    with st.spinner("मास्टर स्कैन चल रहा है…"):
-        frame = _build_master_frame(symbols, selected_tf, json.dumps(settings, default=str))
-        frame = _enrich_frame(frame, int(settings.get("enrich_limit", 60)))
+    # ---------------- controls (कोई data fetch नहीं → तुरंत खुलता है) --------
+    c1, c2, c3, c4 = st.columns([1.7, 1.5, 1.3, 1.5])
+    with c1:
+        _scope_options = ["⚡ त्वरित (40)", "मध्यम (100)", "पूरा (सभी F&O)"]
+        scope_label = st.selectbox("स्कैन सीमा", _scope_options,
+                                    index=0, key="tab1_scope")
+    with c2:
+        new_tf = st.selectbox("Timeframe", ALL_TIMEFRAMES,
+                              index=ALL_TIMEFRAMES.index(selected_tf)
+                              if selected_tf in ALL_TIMEFRAMES else 8,
+                              key="tab1_tf_select")
+    with c3:
+        deep = st.checkbox("डीप स्कैन\n(ज़ोन + EMA)", value=True, key="tab1_deep")
+    with c4:
+        run = st.button("🚀 स्कैन चलाएँ", type="primary", use_container_width=True)
+        refresh = st.button("↻ कैश रिफ़्रेश", use_container_width=True)
+
+    if refresh:
+        st.cache_data.clear()
+        try:
+            SERVICE.clear_cache()
+        except Exception:
+            pass
+        st.session_state.pop("_master_request", None)
+        st.session_state.pop("master_nse_frame", None)
+        st.rerun()
+
+    scope = {"⚡ त्वरित (40)": 40, "मध्यम (100)": 100}.get(scope_label, 0)
+    _cap = int(settings.get("scan_limit", 0) or 0)     # env AAP_SCAN_LIMIT (0 = कोई cap नहीं)
+    if _cap > 0:
+        scope = _cap if scope == 0 else min(scope, _cap)
+    if run:
+        symbols = tuple(universe[:scope] if scope else universe)
+        st.session_state["_master_request"] = {"symbols": symbols, "tf": new_tf,
+                                               "deep": bool(deep), "scope": scope_label}
+        st.rerun()
+
+    request = st.session_state.get("_master_request")
+    if not request:
+        st.info("🚀 **स्कैन चलाने के लिए ऊपर 'स्कैन चलाएँ' दबाएँ.** ऐप तुरंत खुलता है — "
+                "डेटा सिर्फ़ आपके दबाव पर लाता है (कोई अटकता हुआ स्कैन नहीं).\n\n"
+                "*⚡ त्वरित = सिर्फ़ Futures/OI quotes (2-5 सेकंड) · डीप = candle + ज़ोन + EMA "
+                "(ज़्यादा समय, ज़्यादा विश्लेषण)*")
+        _show_source_health()
+        return
+
+    symbols = tuple(request.get("symbols") or ())
+    tf = str(request.get("tf") or selected_tf)
+    deep = bool(request.get("deep"))
+    if not symbols:
+        st.session_state.pop("_master_request", None)
+        st.rerun()
+
+    t0 = time.time()
+    if deep:
+        with st.spinner(f"डीप स्कैन: {len(symbols)} प्रतीक · {tf} (ज़ोन + EMA + VWAP)…"):
+            frame = _build_master_frame(symbols, tf, json.dumps(settings, default=str))
+            frame = _enrich_frame(frame, int(settings.get("enrich_limit", 60)))
+        arts = _ARTIFACTS.get(f"master::{tf}::{abs(hash(tuple(symbols)))}", {})
+        df_map = arts.get("df") or {}
+        zone_map = arts.get("zone") or {}
+        frame["_df"] = [df_map.get(s) for s in frame["Symbol"]]
+        frame["_zone"] = [zone_map.get(s) for s in frame["Symbol"]]
+    else:
+        with st.spinner(f"त्वरित scan: {len(symbols)} प्रतीक (Futures + OI)…"):
+            frame = _quick_quotes_frame(symbols)
+        frame["_df"] = [None] * len(frame)
+        frame["_zone"] = [None] * len(frame)
+    elapsed = time.time() - t0
 
     if frame.empty:
-        st.info("डेटा लोड नहीं हो सका।")
+        st.info("डेटा लोड नहीं हो सका — Settings tab में source health देखें।")
         return
 
     macro = SERVICE.get_macro()
@@ -2322,12 +2985,14 @@ def _render_nse_tab(settings: dict) -> None:
             except Exception:
                 pass
         hyp = _run_hypothesis(row["Symbol"], row.get("_df"), row.get("_zone"), snap,
-                              macro, fii, settings, selected_tf)
+                              macro, fii, settings, tf)
         hyps[row["Symbol"]] = hyp
         rows.append(hyp.bias)
     frame["_Raw_Bias"] = rows
     frame["Final AI Bias"] = [b.title().replace("No Trade", "NO TRADE") for b in rows]
     st.session_state["master_nse_frame"] = frame
+    st.caption(f"✅ स्कैन पूरा — {len(frame)} प्रतीक · {elapsed:.1f} सेकंड · "
+               f"मोड: {'डीप' if deep else 'त्वरित'} · TF {tf}")
 
     token = uuid.uuid4().hex[:8]
     frame["_Bias_Link_URL"] = [
@@ -2341,36 +3006,29 @@ def _render_nse_tab(settings: dict) -> None:
         for s, v in zip(frame["Symbol"], frame["Futures LTP"])
     ]
 
+    def _open_modal(symbol: str) -> None:
+        r = frame[frame["Symbol"] == symbol].iloc[0]
+        snap = r.get("_Enrich") or SymbolSnapshot(symbol=symbol)
+        hyp = hyps.get(symbol)
+        ctx = _hypothesis_context(symbol, r, hyp, snap, macro, fii, settings, tf)
+        llm = _llm_text(hyp, {"macro": macro, "fii": fii})
+        if llm:
+            ctx["llm_used"] = True
+            ctx["llm_text"] = llm
+            ctx["hypothesis_text"] = llm + "\n\n---\n**नियम-आधारित सत्यापन:**\n" + hyp.narrative
+        _show_modal(symbol, str(r["Final AI Bias"]), ctx, hyp, hyp.risk, tf)
+
     qp_sym = st.query_params.get("bias", None)
     if qp_sym and qp_sym in set(frame["Symbol"].tolist()):
         try:
             st.query_params.clear()
         except Exception:
             pass
-        r = frame[frame["Symbol"] == qp_sym].iloc[0]
-        snap = r.get("_Enrich") or SymbolSnapshot(symbol=qp_sym)
-        hyp = hyps.get(qp_sym)
-        ctx = _hypothesis_context(qp_sym, r, hyp, snap, macro, fii, settings, selected_tf)
-        llm = _llm_text(hyp, {"macro": macro, "fii": fii})
-        if llm:
-            ctx["llm_used"] = True
-            ctx["llm_text"] = llm
-            ctx["hypothesis_text"] = llm + "\n\n---\n**नियम-आधारित सत्यापन:**\n" + hyp.narrative
-        _show_modal(qp_sym, str(r["Final AI Bias"]), ctx, hyp, hyp.risk, selected_tf)
+        _open_modal(qp_sym)
 
-    # --- table row click → modal (session state से) -----------------------
     pending = st.session_state.pop("_modal_symbol", None)
     if pending and pending in set(frame["Symbol"].tolist()):
-        r = frame[frame["Symbol"] == pending].iloc[0]
-        snap = r.get("_Enrich") or SymbolSnapshot(symbol=pending)
-        hyp = hyps.get(pending)
-        ctx = _hypothesis_context(pending, r, hyp, snap, macro, fii, settings, selected_tf)
-        llm = _llm_text(hyp, {"macro": macro, "fii": fii})
-        if llm:
-            ctx["llm_used"] = True
-            ctx["llm_text"] = llm
-            ctx["hypothesis_text"] = llm + "\n\n---\n**नियम-आधारित सत्यापन:**\n" + hyp.narrative
-        _show_modal(pending, str(r["Final AI Bias"]), ctx, hyp, hyp.risk, selected_tf)
+        _open_modal(pending)
 
     buys = frame[frame["_Raw_Bias"].isin(["BUY", "STRONG BUY"])].sort_values(
         "Spot Change %", ascending=False).head(5)
@@ -2384,7 +3042,7 @@ def _render_nse_tab(settings: dict) -> None:
         with container:
             st.markdown(title)
             if data.empty:
-                st.info("वर्तमान में कोई मजबूत सेटअप नहीं।")
+                st.info("वर्तमान में कोई मज़बूत सेटअप नहीं (या डीप स्कैन चलाएँ).")
                 continue
             disp = linkify_table(data[top_cols + ["_Spot_Chart_URL", "_Fut_Chart_URL",
                                                    "_Bias_Link_URL"]].copy())
@@ -2423,9 +3081,11 @@ def _render_nse_tab(settings: dict) -> None:
             st.session_state["_last_sel_row"] = idx
             st.session_state["_modal_symbol"] = str(frame.iloc[idx]["Symbol"])
             st.rerun()
-    st.caption("Futures / PCR / OI / Delivery कॉलम केवल उन प्रतीकों के लिए भरे जाते हैं जिनका "
-               "F&O फ़ीड उपलब्ध है; शेष में 'Unavailable' (कोई काल्पनिक आँकड़ा नहीं). "
+    st.caption("Futures LTP/OI — TradingView (≈15 मिनट delayed) या NSE official F&O bhavcopy "
+               "(पिछला session close) · PCR — NSE option chain (bhavcopy) · "
+               "Delivery % — NSE delivery file उपलब्ध नहीं ⇒ 'Unavailable' (कोई काल्पनिक आँकड़ा नहीं). "
                "पूरा विश्लेषण खोलने के लिए **Final AI Bias** सेल पर क्लिक करें (या पंक्ति चुनें).")
+    _show_source_health()
 
 
 # ==============================================================================
@@ -2495,45 +3155,68 @@ def _scan_zones(symbols: tuple[str, ...], tfs_json: str, settings_json: str) -> 
             "Distance %": round(dist_pct, 2),
             "AI Bias": "BUY" if (is_demand and chg > 0) else
                        ("SELL" if (not is_demand and chg < 0) else "NO TRADE"),
-            "_Zone": zone, "_Risk": risk.to_dict(),
+            "_ZoneState": str(zone.state),
+            "_ZoneProx": prox, "_ZoneDist": distal, "_ZoneDemand": is_demand,
+            "_ZonePattern": str(getattr(zone, "pattern", None) or NA),
+            "_ZoneScore": getattr(zone, "score10", None),
+            "_ZoneSL": getattr(zone, "slVal", None), "_ZoneTP": getattr(zone, "tpVal", None),
+            "_ZoneSource": str(getattr(zone, "source", "") or ""),
+            "_Risk": risk.to_dict(),
         })
     return out
 
 
 def _render_zone_tab(settings: dict) -> None:
+    """ज़ोन टैब — स्कैन बटन से (तुरंत खुलता है), सभी चुने TF में नज़दीकी ज़ोन।"""
     st.markdown("### 🎯 ZONE SCANNER — सभी टाइमफ्रेम में सबसे नज़दीकी ज़ोन")
-    st.caption(f"सक्रिय टाइमफ्रेम: {', '.join(ACTIVE_TFS)} · 2h/4h/6h/8h 1h फ़ीड से, "
-               f"Weekly/Monthly daily फ़ीड से resampled · layers: {_layer_status()}")
-
-    c1, c2 = st.columns([2, 5])
-    with c1:
-        if st.button("🚀 Refresh Zone Scan", type="primary", use_container_width=True):
-            st.cache_data.clear()
-            st.rerun()
-    with c2:
-        mode = st.selectbox("मल्टी-टाइमफ्रेम स्कैन",
-                             ["सभी टाइमफ्रेम", "केवल Daily", "केवल Intraday (≤1h)"],
-                             key="zone_scan_mode")
+    st.caption("15m→Monthly तक सभी चुने TF पर candidate zones → सबसे नज़दीकी सक्रिय ज़ोन "
+               "(Fresh/Tested) + Entry / SL / Target / capital-risk sizing · "
+               f"{engine_status_line()}")
 
     universe, _src = SERVICE.get_universe()
-    limit = int(settings.get("scan_limit", 0) or 0)
-    symbols = tuple(universe[:limit] if limit > 0 and universe else universe)
-    if not symbols:
+    c1, c2, c3 = st.columns([1.5, 2.0, 2.5])
+    with c1:
+        run = st.button("🚀 ज़ोन स्कैन चलाएँ", type="primary", use_container_width=True)
+    with c2:
+        mode = st.selectbox("मल्टी-टाइमफ्रेम स्कैन",
+                            ["सभी टाइमफ्रेम", "केवल Daily", "केवल Intraday (≤1h)"],
+                            key="zone_scan_mode")
+    with c3:
+        limit_label = st.selectbox("प्रतीक सीमा", ["40", "80", "150", "सभा"],
+                                    key="zone_limit")
+    if not universe:
         st.info("यूनिवर्स उपलब्ध नहीं।")
         return
+    if run:
+        limit = 0 if limit_label == "सभा" else int(limit_label)
+        symbols = tuple(universe[:limit] if limit else universe)
+        st.session_state["_zone_request"] = {"symbols": symbols, "mode": mode}
+        st.rerun()
 
+    request = st.session_state.get("_zone_request")
+    if not request:
+        st.info("🚀 **'ज़ोन स्कैन चलाएँ' दबाएँ** — ऐप तुरंत खुलता है, डेटा आपके "
+                "दबाव पर आता है. 2h/4h/6h/8h 1h फ़ीड से, Weekly/Monthly daily फ़ीड से.")
+        _show_source_health()
+        return
+
+    symbols = tuple(request.get("symbols") or ())
+    mode = str(request.get("mode") or "सभी टाइमफ्रेम")
     if mode == "केवल Daily":
         tfs = ["Daily"]
     elif mode == "केवल Intraday (≤1h)":
         tfs = [tf for tf in ACTIVE_TFS if tf in ("15m", "30m", "75m", "1h")]
     else:
         tfs = ACTIVE_TFS
-
-    with st.spinner("मल्टी-टाइमफ्रेम ज़ोन स्कैन चल रहा है…"):
+    t0 = time.time()
+    with st.spinner(f"{len(symbols)} प्रतीक × {len(tfs)} टाइमफ्रेम ज़ोन स्कैन…"):
         rows = _scan_zones(symbols, json.dumps(tfs), json.dumps(settings, default=str))
+    st.caption(f"✅ ज़ोन स्कैन पूरा — {len(rows)} प्रतीकों में सक्रिय ज़ोन · "
+               f"{time.time() - t0:.1f} सेकंड")
 
     if not rows:
-        st.info("वर्तमान में चयनित स्टॉक्स में कोई सक्रिय Fresh/Tested ज़ोन नहीं मिला।")
+        st.info("चयनित स्टॉक्स में कोई सक्रिय Fresh/Tested ज़ोन नहीं मिला "
+                "(या candle डेटा उपलब्ध नहीं) — Settings tab में source health देखें.")
         return
 
     df_res = pd.DataFrame(rows)
@@ -2551,10 +3234,8 @@ def _render_zone_tab(settings: dict) -> None:
         except Exception:
             pass
         r = df_res[df_res["Symbols"] == qp].iloc[0]
-        zone = r.get("_Zone")
-        setup = build_risk_setup(float(r["LTP"]), zone, None, settings,
-                                 str(r["AI Bias"]) == "BUY")
-        risk = setup.to_dict()
+        zone = _zone_from_row(r)
+        risk = dict(r.get("_Risk") or {})
         ctx = {
             "close": float(r["LTP"]), "chg_pct_txt": f"{r['_Change_Pct']:+.2f}%",
             "dif_txt": "", "vol_spike_txt": NA,
@@ -2564,17 +3245,19 @@ def _render_zone_tab(settings: dict) -> None:
             "volume_text": NA,
             "zone_text": (f"{r['Zone State']} · {r['demand/Supply']} · टाइमफ्रेम "
                           f"{r['Near Timeframe']} · प्रॉक्सिमल {r['Entry Price (Proximal)']} · "
-                          f"डिस्टल {r['Distal Stoploss']} · दूरी {r['Distance %']}%"),
+                          f"डिस्टल {r['Distal Stoploss']} · दूरी {r['Distance %']}% · "
+                          f"पैटर्न {r.get('Zone Pattern', NA)}"),
             "futures_text": "ज़ोन टैब में Futures डेटा शामिल नहीं (टैब 1 में उपलब्ध)",
             "options_text": "ज़ोन टैब में Options डेटा शामिल नहीं (टैब 1 में उपलब्ध)",
             "delivery_text": "ज़ोन टैब में Delivery डेटा शामिल नहीं (टैब 1 में उपलब्ध)",
             "news_text": "ज़ोन टैब में समाचार डेटा शामिल नहीं (टैब 4 में उपलब्ध)",
-            "risk_text": (f"एंट्री ₹{risk['entry']} · SL ₹{risk['sl']} · "
-                          f"लक्ष्य ₹{risk['target']} · साइज़ {risk['qty']} शेयर"),
-            "invalidations": [f"डिस्टल लाइन ₹{risk['sl']} के बाहर क्लोज़",
+            "risk_text": (f"एंट्री ₹{risk.get('entry')} · SL ₹{risk.get('sl')} · "
+                          f"लक्ष्य ₹{risk.get('target')} · साइज़ {risk.get('qty')}"),
+            "invalidations": [f"डिस्टल लाइन ₹{risk.get('sl')} के बाहर क्लोज़",
                               "टाइमफ्रेम बदलने पर ज़ोन की प्राथमिकता बदल सकती है"],
             "hypothesis_text": (f"**{qp}** — **{r['AI Bias']}** (ज़ोन आधारित, "
                                 f"{r['Near Timeframe']})"),
+            "data_source": "zone engine: " + str(r.get("_ZoneSource", "") or NA),
             "llm_used": False,
         }
         _show_modal(qp, str(r["AI Bias"]), ctx, _SimpleHyp(str(r["AI Bias"]), ctx["hypothesis_text"]),
@@ -2596,6 +3279,7 @@ def _render_zone_tab(settings: dict) -> None:
                      "Distance %": st.column_config.NumberColumn("Distance %", format="%.2f%%"),
                      "Quantity (Capital According)": st.column_config.NumberColumn("Quantity (Capital According)", format="%d"),
                  }, hide_index=True, height=560, **df_layout(st))
+    _show_source_health()
 
 
 class _SimpleHyp:
@@ -2699,7 +3383,10 @@ def _scan_global_zones(tfs_json: str, settings_json: str) -> list[dict]:
             "Target Price": risk.target,
             "AI Bias": "BUY" if (is_demand and chg > 0) else
                        ("SELL" if (not is_demand and chg < 0) else "NEUTRAL"),
-            "_Zone": zone,
+            "_ZoneState": str(zone.state),
+            "_ZoneProx": prox, "_ZoneDist": distal, "_ZoneDemand": is_demand,
+            "_ZonePattern": str(getattr(zone, "pattern", None) or NA),
+            "_ZoneSL": getattr(zone, "slVal", None), "_ZoneTP": getattr(zone, "tpVal", None),
         })
     return out
 
@@ -2709,20 +3396,33 @@ def _render_global_zone_tab(settings: dict) -> None:
     st.caption("DXY, US10Y, सोना, क्रूड, US30, S&P500, A50, Nikkei — वास्तविक OHLCV से "
                "निकला नज़दीकी माँग/आपूर्ति ज़ोन + TradingView लिंक।")
 
-    c1, _ = st.columns([2, 4])
+    c1, c2 = st.columns([1.6, 3.0])
     with c1:
-        if st.button("🚀 Refresh Global Zones", type="primary", use_container_width=True):
-            st.cache_data.clear()
-            st.rerun()
+        run = st.button("🚀 ग्लोबल ज़ोन स्कैन", type="primary", use_container_width=True)
+    with c2:
+        tf_label = st.selectbox("टाइमफ्रेम", ["1h + Daily", "केवल 1h", "केवल Daily",
+                                              "1h + 4h + Daily"], key="global_tfs")
+    if run:
+        st.session_state["_global_request"] = tf_label
+        st.rerun()
+    if not st.session_state.get("_global_request"):
+        st.info("🚀 **'ग्लोबल ज़ोन स्कैन' दबाएँ** — 26 वैश्विक instruments (DXY, US10Y, "
+                "Gold, Crude, A50, Nikkei, NIFTY/GIFT futures) पर multi-timeframe ज़ोन।")
+        _show_source_health()
+        return
 
-    tfs = [tf for tf in ACTIVE_TFS if tf in ("1h", "2h", "4h", "8h", "Daily", "Weekly")]
-    if not tfs:
-        tfs = ["1h", "Daily"]
+    tfs = {"केवल 1h": ["1h"], "केवल Daily": ["Daily"],
+           "1h + 4h + Daily": ["1h", "4h", "Daily"]}.get(
+        str(st.session_state.get("_global_request")), ["1h", "Daily"])
+    t0 = time.time()
     with st.spinner("ग्लोबल ज़ोन स्कैन चल रहा है…"):
         rows = _scan_global_zones(json.dumps(tfs), json.dumps(settings, default=str))
+    st.caption(f"✅ ग्लोबल स्कैन पूरा — {len(rows)} instruments · {time.time() - t0:.1f} सेकंड")
 
     if not rows:
-        st.info("ग्लोबल मार्केट्स में वर्तमान में कोई सक्रिय Fresh/Tested ज़ोन नहीं मिला।")
+        st.info("ग्लोबल मार्केट्स में इस समय कोई सक्रिय Fresh/Tested ज़ोन नहीं मिला "
+                "(या OHLCV उपलब्ध नहीं) — source health नीचे देखें।")
+        _show_source_health()
         return
 
     df_gz = pd.DataFrame(rows)
@@ -2741,7 +3441,8 @@ def _render_global_zone_tab(settings: dict) -> None:
         except Exception:
             pass
         r = df_gz[df_gz["Symbol"] == qp].iloc[0]
-        setup = build_risk_setup(float(r["LTP"]), r.get("_Zone"), None, settings,
+        zone = _zone_from_row(r)
+        setup = build_risk_setup(float(r["LTP"]), zone, None, settings,
                                  str(r["AI Bias"]) == "BUY")
         risk = setup.to_dict()
         ctx = {
@@ -2753,7 +3454,7 @@ def _render_global_zone_tab(settings: dict) -> None:
             "volume_text": NA,
             "zone_text": (f"{r['Zone State']} · {r['Demand/Supply']} · "
                           f"टाइमफ्रेम {r['Near Timeframe']} · प्रॉक्सिमल {r['Entry Price']} · "
-                          f"डिस्टल {r['Distal Stoploss']}"),
+                          f"डिस्टल {r['Distal Stoploss']} · पैटर्न {r.get('Zone Pattern', NA)}"),
             "futures_text": "ग्लोबल इंस्ट्रूमेंट के लिए NSE F&O डेटा लागू नहीं",
             "options_text": "ग्लोबल इंस्ट्रूमेंट के लिए Option Chain लागू नहीं",
             "delivery_text": "ग्लोबल इंस्ट्रूमेंट के लिए Delivery लागू नहीं",
@@ -2772,7 +3473,7 @@ def _render_global_zone_tab(settings: dict) -> None:
                     str(r["Near Timeframe"]))
 
     g_cols = ["Symbol", "Name", "LTP", "Demand/Supply", "Near Timeframe", "Zone State",
-              "Entry Price", "Distal Stoploss", "Target Price", "AI Bias"]
+              "Zone Pattern", "Entry Price", "Distal Stoploss", "Target Price", "AI Bias"]
     disp = linkify_table(df_gz[g_cols + ["_Chart_URL", "_Bias_Link_URL"]].copy())
     st.dataframe(disp.style.apply(global_styles, axis=1),
                  column_config={
@@ -2783,6 +3484,7 @@ def _render_global_zone_tab(settings: dict) -> None:
                      "Distal Stoploss": st.column_config.NumberColumn("Distal Stoploss", format="%.4f"),
                      "Target Price": st.column_config.NumberColumn("Target Price", format="%.4f"),
                  }, hide_index=True, height=560, **df_layout(st))
+    _show_source_health()
 
 
 # ==============================================================================
@@ -2960,6 +3662,26 @@ def _render_news_events_tab(settings: dict) -> None:
             st.info("NSE घोषणा फ़ीड अभी उपलब्ध नहीं (खाली नहीं दिखाया गया)।")
 
     st.markdown("---")
+    st.markdown("#### 📰 ताज़ा बाज़ार समाचार (मुक्त RSS स्रोत — कोई API key नहीं)")
+    try:
+        news = fetch_rss_news(limit=12)
+    except Exception:
+        news = []
+    if news:
+        n1, n2 = st.columns(2)
+        half = (len(news) + 1) // 2
+        for col, chunk in ((n1, news[:half]), (n2, news[half:])):
+            with col:
+                for item in chunk:
+                    title = str(item.get("title") or "")[:150]
+                    link = str(item.get("link") or "")
+                    st.markdown(f"• [{title}]({link})  \n  <sub>{item.get('source', '')} · "
+                                f"{item.get('published', '')[:31]}</sub>", unsafe_allow_html=True)
+    else:
+        st.info("अभी कोई RSS headline fetch नहीं हो पाया (नेटवर्क/स्रोत) — "
+                "Source health नीचे देखें.")
+
+    st.markdown("---")
     st.markdown("#### 🔔 Live Signals & Alerts (Proximity, Vol Spike, EMA Cross)")
     if master is not None and not master.empty:
         alerts = master[master["Live Signals Highlight"].fillna("").ne("")].head(10)
@@ -2969,6 +3691,7 @@ def _render_news_events_tab(settings: dict) -> None:
                            f"Spot LTP: ₹{alt['Spot LTP']} | Bias: {alt['Final AI Bias']}")
         else:
             st.caption("वर्तमान में कोई नया अलर्ट नहीं मिला।")
+    _show_source_health()
 
 
 # ==============================================================================
@@ -3031,6 +3754,23 @@ def _render_settings_tab(settings: dict) -> None:
             st.rerun()
 
     st.markdown("---")
+    st.markdown("#### 🔑 Secrets (Streamlit Cloud / .env — key कभी दिखती नहीं)")
+    sec = _secret_status()
+    s1, s2, s3 = st.columns(3)
+    with s1:
+        st.write(f"**DhanHQ (live futures/OI/candles):** "
+                 f"{'🟢 क्रेडेंशियल मौजूद' if sec['dhan'] else '🟡 सेट नहीं — public master + TradingView/NSE bhavcopy fallback'}")
+    with s2:
+        st.write(f"**Gemini (AI Pro narration):** "
+                 f"{'🟢 क्रेडेंशियल मौजूद' if sec['gemini'] else '🟡 सेट नहीं — rule-based fallback चलेगा'}")
+    with s3:
+        st.write(f"**स्रोत:** {'Streamlit secrets' if sec['applied'] or sec['host_loader'] else 'env / .env'}"
+                 f" · host loader: {'✅' if sec['host_loader'] else '—'}")
+    st.caption("Streamlit Cloud में secrets को दोनों तरह रख सकते हैं — flat "
+               "(`DHAN_CLIENT_ID = \"…\"`) या sectioned (`[dhan]` → `client_id`/`access_token`). "
+               "ऐप दोनों पढ़ता है; यहाँ सिर्फ़ मौजूद/न-मौजूद दिखता है, key कभी नहीं।")
+
+    st.markdown("---")
     st.markdown("#### 🔌 डेटा प्रोवाइडर स्थिति")
     caps: dict = _probe_caps()
     stt = engine_status()
@@ -3054,10 +3794,10 @@ def _render_settings_tab(settings: dict) -> None:
                  f"{_dot(caps.get('announcements'), 'Live उपलब्ध', 'उपलब्ध नहीं')}")
     with p3:
         st.write(f"**Dhan (Scrip Master → यूनिवर्स):** 🟢 Public CSV"
-                 f"{' + API key' if os.getenv('DHAN_CLIENT_ID') else ''}")
+                 f"{' + API key' if _secret_status()['dhan'] else ''}")
         st.write(f"**Dhan API quotes/candles/OI:** "
-                 f"{_dot(bool(os.getenv('DHAN_CLIENT_ID') and os.getenv('DHAN_ACCESS_TOKEN')), 'Configured', 'Not configured — TradingView/Yahoo fallback')}")
-        st.write(f"**Gemini AI Pro:** {'🟢 Connected' if os.getenv('GEMINI_API_KEY') else '🟡 Rule-engine fallback'}")
+                 f"{_dot(_secret_status()['dhan'], 'Configured — live futures/OI', 'Not configured — TradingView + NSE bhavcopy fallback')}")
+        st.write(f"**Gemini AI Pro:** {'🟢 Connected' if _secret_status()['gemini'] else '🟡 Rule-engine fallback'}")
     with p4:
         st.write(f"**Host repo zone_core:** {_dot(stt['host_zone_core'], 'Pine-parity engine', 'Inline fallback')}")
         st.write(f"**Host repo services:** {_dot(stt['host_zones_service'], 'zones/indicators/signals/risk', 'Inline fallback')}")
@@ -3067,6 +3807,30 @@ def _render_settings_tab(settings: dict) -> None:
     st.caption("NSE का Akamai लेयर datacenter IP (Render/Cloud) पर कुछ एंडपॉइंट ब्लॉक करता है। "
                "ऐसे में ऐप वास्तविक TradingView (delayed) Futures/OI दिखाता है और जो डेटा उपलब्ध नहीं "
                "उसे 'Unavailable' लिखता है — कोई काल्पनिक आँकड़ा नहीं।")
+
+    st.markdown("---")
+    st.markdown("#### 🔌 डेटा-स्रोत स्वास्थ्य (लाइव — यही बताता है कि क्या fetch हुआ)")
+    rows = source_health_rows()
+    if rows:
+        try:
+            st.dataframe(pd.DataFrame(rows).astype(str), hide_index=True, **df_layout(st))
+        except Exception:
+            st.dataframe(pd.DataFrame(rows).astype(str), hide_index=True)
+    else:
+        st.caption("अभी कोई स्रोत कॉल नहीं हुआ — कोई भी स्कैन चलाएँ.")
+    st.caption("'🔴 उपलब्ध नहीं' का मतलब है कि उस source से कोई आँकड़ा **नहीं** लाया गया — "
+               "ऐप उस जगह 'Unavailable' दिखाता है (काल्पनिक आँकड़ा कभी नहीं).")
+
+    st.markdown("---")
+    st.markdown("#### ⚡ गति (Speed) कैसे बढ़ाएँ")
+    st.code("""# कोड में (Render / Streamlit Cloud env vars)
+AAP_SCAN_LIMIT=40        # मास्टर स्कैन के लिए प्रतीक सीमा (0 = सभी)
+AAP_ENRICH_LIMIT=40      # Futures/OI enrich सीमा (Top-N)
+
+# ब्राउज़र से (Settings tab)
+स्कैन सीमा   → ⚡ त्वरित (40) / मध्यम (100) / पूरा (सभी)
+डीप स्कैन    → ON = candle + ज़ोन + EMA  |  OFF = सिर्फ़ Futures/OI quotes (2-5 सेकंड)
+ज़ोन TF      → कम TF चुनें (केवल Daily / केवल Intraday) = बहुत तेज़""", language="text")
 
     st.markdown("---")
     st.markdown("#### 📦 Repo संरचना (single-file edition)")
