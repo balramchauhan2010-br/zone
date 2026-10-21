@@ -205,7 +205,7 @@ with tab_futures:
 
     cb, cs = st.columns(2)
     with cb:
-        st.subheader("TOP 10 BUY (बहु-कारक AI)")
+        st.subheader("TOP 10 BUY ")
         st.dataframe(
             top_buy[["Symbol", "Spot LTP", "Futures LTP", "Dif. %", "Spot Change %", "Volume Spike Ratio"]],
             column_config={
@@ -217,7 +217,7 @@ with tab_futures:
         )
 
     with cs:
-        st.subheader("TOP 10 SELL (बहु-कारक AI)")
+        st.subheader("TOP 10 SELL")
         st.dataframe(
             top_sell[["Symbol", "Spot LTP", "Futures LTP", "Dif. %", "Spot Change %", "Volume Spike Ratio"]],
             column_config={
@@ -233,8 +233,8 @@ with tab_futures:
     # मास्टर तालिका हेडर — 213 स्टॉक्स की कुल संख्या
     h1, h2, h3 = st.columns([2, 1, 1])
     with h1:
-        st.markdown(f"### 📊 मास्टर तालिका — NSE ALL FUTURES ({len(df_all)} स्टॉक्स)")
-        st.caption("Final AI Bias पर टच करके सीधा बिंदुवार हिंदी संस्थागत विश्लेषण पॉपअप खोलें।")
+        st.markdown(f" ")
+        st.caption(" ")
     with h2:
         st.button("🔄 रिफ्रेश स्कैनर", use_container_width=True)
     with h3:
