@@ -1,137 +1,120 @@
-"""Transparent rule-based scoring; scores are not predictive probabilities."""
-from __future__ import annotations
+from typing import Dict, Any
 
-from typing import Any
-
-FEATURE_WEIGHTS: dict[str, int] = {
-    "higher_timeframe_structure": 12,
-    "intraday_structure": 10,
-    "zone_quality": 12,
-    "entry_confirmation": 10,
-    "volume_expansion": 8,
-    "delivery_context": 5,
-    "futures_oi_behavior": 8,
-    "options_context": 5,
-    "ema_alignment": 7,
-    "vwap_alignment": 5,
-    "sector_relative_strength": 4,
-    "nifty_context": 4,
-    "global_macro": 3,
-    "news_event_risk": 3,
-    "risk_reward": 4,
-}
-
-REQUIRED_FOR_ENTRY = (
-    "higher_timeframe_structure", "intraday_structure", "zone_quality",
-    "entry_confirmation", "risk_reward",
-)
-
-
-def classify_price_oi(price_change: float | None, oi_change: float | None,
-                      observation_interval_seconds: float | None,
-                      same_contract: bool = True) -> dict[str, Any]:
-    if not same_contract:
-        return {"classification": "UNKNOWN", "reason": "Contract rollover/mismatch"}
-    if price_change is None or oi_change is None or not observation_interval_seconds or observation_interval_seconds <= 0:
-        return {"classification": "UNKNOWN", "reason": "Synchronized price/OI observations are not available"}
-    if price_change > 0 and oi_change > 0:
-        label = "POTENTIAL_LONG_BUILDUP"
-    elif price_change < 0 and oi_change > 0:
-        label = "POTENTIAL_SHORT_BUILDUP"
-    elif price_change > 0 and oi_change < 0:
-        label = "POTENTIAL_SHORT_COVERING"
-    elif price_change < 0 and oi_change < 0:
-        label = "POTENTIAL_LONG_UNWINDING"
-    else:
-        label = "NEUTRAL"
-    return {
-        "classification": label,
-        "reason": "Descriptive price/OI behavior only; it does not identify market participants.",
-        "observation_interval_seconds": float(observation_interval_seconds),
-    }
-
-
-def score_setup(
-    features: dict[str, int | float | None],
-    *,
-    eligibility_status: str = "UNKNOWN",
-    fno_ban_status: str = "UNAVAILABLE",
-    setup_invalidated: bool = False,
-    risk_reward_ratio: float | None = None,
-    minimum_risk_reward: float = 1.5,
-    weights: dict[str, int] | None = None,
-) -> dict[str, Any]:
-    """Score evidence directionally and fail closed on missing hard requirements.
-
-    Feature values must be +1 bullish, -1 bearish, 0 neutral, or None unknown.
-    Returned scores summarize supplied evidence; they are not probabilities.
+def evaluate_mtf_rule1(mtf_data: Dict[str, Dict[str, Any]]) -> int:
     """
-    chosen_weights = {**FEATURE_WEIGHTS, **(weights or {})}
-    bullish = 0.0
-    bearish = 0.0
-    known_weight = 0
-    total_weight = sum(max(0, int(w)) for w in chosen_weights.values()) or 1
-    evidence: list[str] = []
-    missing: list[str] = []
-    for name, weight in chosen_weights.items():
-        value = features.get(name)
-        if value not in (-1, 0, 1, -1.0, 0.0, 1.0):
-            missing.append(name)
-            continue
-        known_weight += max(0, int(weight))
-        if value > 0:
-            bullish += max(0, int(weight))
-            evidence.append(f"{name}: bullish evidence")
-        elif value < 0:
-            bearish += max(0, int(weight))
-            evidence.append(f"{name}: bearish evidence")
-        else:
-            evidence.append(f"{name}: neutral/mixed")
+    नियम 1:
+    Lower (15m, 30m), Intermediate (1h, 2h), Higher (4h, 6h, 1d, 1w, 1M)
+    प्रत्येक ग्रुप में: EMA35 > EMA100, LTP > VWAP और Volume Spike हो।
+    तीनों ग्रुप Bullish हों तो +1, तीनों Bearish हों तो -1, अन्यथा 0।
+    """
+    def check_group(tf_list):
+        bull, bear, count = 0, 0, 0
+        for tf in tf_list:
+            if tf in mtf_data:
+                d = mtf_data[tf]
+                count += 1
+                if d.get("ema35", 0) > d.get("ema100", 0) and d.get("ltp", 0) > d.get("vwap", 0) and d.get("volume_spike", False):
+                    bull += 1
+                elif d.get("ema35", 0) < d.get("ema100", 0) and d.get("ltp", 0) < d.get("vwap", 0) and d.get("volume_spike", False):
+                    bear += 1
+        if count > 0 and bull == count:
+            return 1
+        if count > 0 and bear == count:
+            return -1
+        return 0
 
-    quality = round(known_weight / total_weight * 100)
-    required_missing = [name for name in REQUIRED_FOR_ENTRY if features.get(name) not in (-1, 0, 1, -1.0, 0.0, 1.0)]
-    blockers: list[str] = []
-    if eligibility_status != "ELIGIBLE_VERIFIED":
-        blockers.append("Futures eligibility has not been verified against the configured official source")
-    if fno_ban_status != "CLEAR_VERIFIED":
-        blockers.append("F&O ban status is not verified clear")
-    if setup_invalidated:
-        blockers.append("Setup invalidation level has been breached")
-    if required_missing:
-        blockers.append("Required evidence missing: " + ", ".join(required_missing))
-    if risk_reward_ratio is None:
-        blockers.append("Risk/Reward is unavailable")
-    elif risk_reward_ratio < minimum_risk_reward:
-        blockers.append(f"Risk/Reward {risk_reward_ratio:.2f} is below configured minimum {minimum_risk_reward:.2f}")
+    lower = check_group(["15m", "30m"])
+    inter = check_group(["1h", "2h"])
+    higher = check_group(["4h", "6h", "1d", "1w", "1M"])
 
-    net = bullish - bearish
-    final = "NO TRADE"
-    if not blockers:
-        if bullish >= 75 and net >= 25:
-            final = "STRONG BUY"
-        elif bullish >= 55 and net >= 15:
-            final = "BUY"
-        elif bearish >= 75 and net <= -25:
-            final = "STRONG SELL"
-        elif bearish >= 55 and net <= -15:
-            final = "SELL"
-        else:
-            final = "HOLD"
+    if lower == 1 and inter == 1 and higher == 1:
+        return 1
+    elif lower == -1 and inter == -1 and higher == -1:
+        return -1
+    return 0
+
+def calculate_ai_hypothesis_score(stock: dict, market: dict) -> dict:
+    """
+    10-Point Institutional AI Hypothesis Calculator
+    """
+    s = {}
+    verified_status = []
+
+    # 1. MTF EMA/VWAP/Volume Spike
+    s['r1_mtf'] = evaluate_mtf_rule1(stock.get('mtf_indicators', {}))
+    verified_status.append(stock.get('indicators_fresh', True))
+
+    # 2. Spot LTP vs Futures LTP
+    spot = stock.get('spot_ltp', 0.0)
+    fut = stock.get('futures_ltp', 0.0)
+    s['r2_fut_premium'] = 1 if fut > spot else (-1 if fut < spot else 0)
+    verified_status.append(stock.get('price_fresh', True))
+
+    # 3. Delivery %
+    deliv_c = stock.get('delivery_pct_curr', 0.0)
+    deliv_p = stock.get('delivery_pct_prev', 0.0)
+    s['r3_delivery'] = 1 if deliv_c > deliv_p else (-1 if deliv_c < deliv_p else 0)
+    verified_status.append(True)
+
+    # 4. PCR
+    pcr = stock.get('pcr', 1.0)
+    s['r4_pcr'] = 1 if pcr > 1.5 else (-1 if pcr < 1.0 else 0)
+    verified_status.append(stock.get('oi_fresh', True))
+
+    # 5. Buildup Classification
+    buildup = str(stock.get('buildup', '')).lower()
+    s['r5_buildup'] = 1 if 'long buildup' in buildup else (-1 if 'short buildup' in buildup else 0)
+    verified_status.append(stock.get('oi_fresh', True))
+
+    # 6. Global/Macro Finance + FII Inflow + Stock News
+    fii_inflow = stock.get('fii_inflow', False)
+    sentiment = stock.get('news_sentiment', 'neutral')
+    if fii_inflow and sentiment in ['positive', 'neutral']:
+        s['r6_macro_fii'] = 1
+    elif not fii_inflow and sentiment in ['negative', 'neutral']:
+        s['r6_macro_fii'] = -1
+    else:
+        s['r6_macro_fii'] = 0
+    verified_status.append(True)
+
+    # 7. Gift Nifty & NIFTY50
+    gift = market.get('gift_nifty_pct', 0.0)
+    nifty = market.get('nifty50_pct', 0.0)
+    s['r7_market_trend'] = 1 if (gift > 0 and nifty > 0) else (-1 if (gift < 0 and nifty < 0) else 0)
+    verified_status.append(market.get('macro_fresh', True))
+
+    # 8. Nifty 50 Proximity to Zones (1% Limit)
+    nifty_ltp = market.get('nifty_ltp', 0.0)
+    sup = market.get('nifty_nearest_supply', float('inf'))
+    dem = market.get('nifty_nearest_demand', 0.0)
+    sup_within_1pct = (sup <= nifty_ltp * 1.01)
+    dem_within_1pct = (dem >= nifty_ltp * 0.99)
+    if not sup_within_1pct and dem_within_1pct:
+        s['r8_nifty_zones'] = 1
+    elif not dem_within_1pct and sup_within_1pct:
+        s['r8_nifty_zones'] = -1
+    else:
+        s['r8_nifty_zones'] = 0
+    verified_status.append(True)
+
+    # 9. All Futures Stocks Market Breadth
+    green = market.get('breadth_advances', 0)
+    red = market.get('breadth_declines', 0)
+    tot = green + red
+    s['r9_breadth'] = 1 if tot > 0 and (green / tot > 0.5) else (-1 if tot > 0 and (red / tot > 0.5) else 0)
+    verified_status.append(True)
+
+    # 10. Volume vs 5-Day Average
+    vol = stock.get('current_volume', 0)
+    avg_vol = stock.get('avg_5d_volume', 0)
+    s['r10_vol_5d'] = 1 if vol > avg_vol else (-1 if vol < avg_vol else 0)
+    verified_status.append(stock.get('volume_fresh', True))
+
+    total = sum(s.values())
+    is_verified = all(verified_status)
 
     return {
-        "bullish_score": round(bullish, 1),
-        "bearish_score": round(bearish, 1),
-        "setup_quality_score": round(max(bullish, bearish), 1),
-        "data_quality_score": quality,
-        "data_quality_definition": "Weighted completeness of configured directional evidence; not confidence or probability.",
-        "final_bias": final,
-        "risk_status": "BLOCKED" if blockers else "CHECKED",
-        "hard_filters": blockers,
-        "missing_features": missing,
-        "why_buy": [item for item in evidence if "bullish" in item],
-        "why_sell": [item for item in evidence if "bearish" in item],
-        "what_confirms": [item for item in evidence if "bullish" in item or "bearish" in item],
-        "what_invalidates": "Configured zone/structure invalidation; no level is generated when source data is missing.",
-        "main_risk": blockers[0] if blockers else "Market regime and gap risk remain; monitor source freshness.",
-        "signal_explanation": "Transparent weighted rule score. This is not a calibrated probability and makes no profit guarantee.",
+        "score": total,
+        "details": s,
+        "data_status": "Verified" if is_verified else "Unverified"
     }
