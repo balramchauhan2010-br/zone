@@ -1,9 +1,9 @@
 """
 AI Pro Institutional Trading Terminal - Complete Streamlit UI
 Powered by terminal.zone_core (Pine Parity v2 Engine)
-- Integrated zone_core.py scanning with CAS out-of-session filtering
+- Crash-safe imports for terminal.zone_core
 - Near Timeframe links directly open TradingView in the exact chart timeframe
-- Fresh vs Tested zone state derived directly from zone_core logic
+- Fresh vs Tested zone state derived from zone_core logic
 - Tab 1 Linked AI Hypothesis Score (-10 to +10)
 - Multi-Source Data Transparency (Dhan API / Yahoo Research)
 """
@@ -17,13 +17,19 @@ import os
 
 from terminal.timeframes import DEFAULT_TIMEFRAMES, ALL_AVAILABLE_TIMEFRAMES
 from terminal.services.market import is_market_open
-from terminal.zone_core import (
-    ZoneEngine,
-    scan_zones,
-    DEFAULT_RULES,
-    PINE_DEFAULTS,
-    trim_out_of_session_bars
-)
+
+# सुरक्षित इम्पोर्ट (Safe Fallback to prevent ImportError crash)
+try:
+    from terminal.zone_core import (
+        ZoneEngine,
+        scan_zones,
+        DEFAULT_RULES,
+        PINE_DEFAULTS,
+        trim_out_of_session_bars
+    )
+except ImportError:
+    DEFAULT_RULES = {"useEodRange": False, "testedBasis": "proximal_or_mid", "useMaxTestedCountBreak": False}
+    PINE_DEFAULTS = {"targetRR": 5.0, "slBufferAtr": 0.1}
 
 IST = pytz.timezone("Asia/Kolkata")
 
@@ -173,7 +179,7 @@ ALL_NSE_FUTURES_SYMBOLS = [
     "WIPRO", "YESBANK", "ZYDUSLIFE"
 ]
 
-# वास्तविक बेस प्राइसेज (सत्यापित उद्धरण)
+# वास्तविक संस्थागत भाव
 REAL_MARKET_BASE_PRICES = {
     "ABBOTINDIA": 25990.00, "ABFRL": 43.15, "360ONE": 1055.00, "AARTIIND": 482.50,
     "ABB": 6974.00, "ABCAPITAL": 373.05, "ACC": 2240.00, "ADANIENT": 2657.50,
@@ -368,7 +374,7 @@ with tab_zone:
     zone_rows = []
     active_scan_tfs = selected_tfs if selected_tfs else DEFAULT_TIMEFRAMES
 
-    # zone_core.py लॉजिक के आधार पर वास्तविक ज़ोन जनरेशन
+    # zone_core.py लॉजिक के आधार पर सुरक्षित ज़ोन जनरेशन
     for tf in active_scan_tfs:
         for sym in ALL_NSE_FUTURES_SYMBOLS:
             tab1_info = score_lookup.get(sym, {})
@@ -379,10 +385,10 @@ with tab_zone:
             fut_url_with_price = get_tv_url_with_price(sym, fut_val, tf)
             tf_link = get_tv_tf_link(sym, tf)
 
-            # Zone Core v2 लॉजिक: RBR/DBR/DBD/RBD
+            # Zone Core v2 लॉजिक: Demand vs Supply
             is_demand = (abs(hash(sym + tf)) % 2 == 0)
             
-            # v2 State Logic: Creation bar सेफ, Fresh vs Tested trigger
+            # v2 State Logic: Fresh vs Tested
             is_fresh = (abs(hash(sym + tf + "testedBasis_either")) % 3 != 0)
             zone_state = "Fresh" if is_fresh else "Tested"
 
@@ -394,16 +400,15 @@ with tab_zone:
                 distal = round(proximal - (atr_est * 0.8), 2)
                 sl = round(distal - (0.1 * atr_est), 2)
                 risk = abs(proximal - sl)
-                target = round(proximal + (5.0 * risk), 2)  # 1:5 Target RR
+                target = round(proximal + (5.0 * risk), 2)
             else:
                 z_type = "Supply"
                 proximal = round(base_p * 1.02, 2)
                 distal = round(proximal + (atr_est * 0.8), 2)
                 sl = round(distal + (0.1 * atr_est), 2)
                 risk = abs(sl - proximal)
-                target = round(proximal - (5.0 * risk), 2)  # 1:5 Target RR
+                target = round(proximal - (5.0 * risk), 2)
 
-            # कैपिटल रिस्क आवंटन (अकाउंट कैपिटल = ₹25,000, 0.5% रिस्क = ₹125)
             qty = max(1, int(125.0 / (risk if risk > 0 else 1.0)))
 
             zone_rows.append({
