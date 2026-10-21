@@ -1,18 +1,15 @@
 """
-Institutional Signal Engine with 10-Point AI Hypothesis Scoring System.
+Institutional Signal Engine with 10-Point AI Hypothesis Scoring System (-10 to +10)
 """
 
 from typing import Dict, Any, List
-from terminal.services.market import check_data_freshness
 
 def evaluate_mtf_rule1(mtf_data: Dict[str, Dict[str, Any]]) -> int:
     """
     नियम 1:
-    - Lower Group: 15m, 30m
-    - Intermediate Group: 1h, 2h
-    - Higher Group: 4h, 6h, 1d, 1w, 1M
-    प्रत्येक लागू टाइमफ्रेम में: EMA35 > EMA100, LTP > VWAP, और Volume Spike (Vol > 20 EMA Vol) होना चाहिए।
-    यदि तीनों समूह एक ही दिशा में Bullish हों तो +1, Bearish हों तो -1, अन्यथा 0।
+    Lower (15m, 30m), Intermediate (1h, 2h), Higher (4h, 6h, 1d, 1w, 1M)
+    प्रत्येक समूह में EMA35 > EMA100, LTP > VWAP और Volume Spike हो।
+    तीनों समूह Bullish हों तो +1, तीनों Bearish हों तो -1, अन्यथा 0।
     """
     def check_group(tf_list: List[str]) -> int:
         bull, bear, count = 0, 0, 0
@@ -49,22 +46,12 @@ def evaluate_mtf_rule1(mtf_data: Dict[str, Dict[str, Any]]) -> int:
 
 def calculate_ai_hypothesis_score(stock: Dict[str, Any], market: Dict[str, Any]) -> Dict[str, Any]:
     """
-    10-Point AI Hypothesis Score System (-10 से +10):
-    1. MTF EMA/VWAP/Volume Spike
-    2. Futures LTP vs Spot LTP
-    3. Delivery % vs Previous Day
-    4. PCR (Put-Call Ratio)
-    5. Buildup Classification
-    6. Macro/FII Flow + Stock News Sentiment
-    7. Gift Nifty & NIFTY50 Bias
-    8. Nifty50 LTP Proximity to Supply/Demand (1% Band)
-    9. NSE All Futures Market Breadth (>50% Green/Red)
-    10. 5-Day Average Volume Total
+    10-Point AI Hypothesis Calculator (पूरा 10 में से 10 स्कोर)
     """
     scores = {}
     verified_list = []
 
-    # 1. MTF Indicators
+    # 1. MTF EMA35, EMA100, VWAP और Volume Spike
     scores['r1_mtf'] = evaluate_mtf_rule1(stock.get('mtf_indicators', {}))
     verified_list.append(stock.get('indicators_fresh', True))
 
@@ -79,7 +66,7 @@ def calculate_ai_hypothesis_score(stock: Dict[str, Any], market: Dict[str, Any])
         scores['r2_fut_premium'] = 0
     verified_list.append(stock.get('price_fresh', True))
 
-    # 3. Delivery % (दिन में एक बार EOD - सदैव Valid)
+    # 3. Delivery % vs Previous Day
     deliv_curr = stock.get('delivery_pct_curr', 0.0)
     deliv_prev = stock.get('delivery_pct_prev', 0.0)
     if deliv_curr > deliv_prev:
@@ -90,7 +77,7 @@ def calculate_ai_hypothesis_score(stock: Dict[str, Any], market: Dict[str, Any])
         scores['r3_delivery'] = 0
     verified_list.append(True)
 
-    # 4. PCR
+    # 4. PCR (Put-Call Ratio)
     pcr = stock.get('pcr', 1.0)
     if pcr > 1.5:
         scores['r4_pcr'] = 1
@@ -110,7 +97,7 @@ def calculate_ai_hypothesis_score(stock: Dict[str, Any], market: Dict[str, Any])
         scores['r5_buildup'] = 0
     verified_list.append(stock.get('oi_fresh', True))
 
-    # 6. Global/Macro Finance + FII Flow + Stock News Sentiment
+    # 6. Global & Macro FII Inflow + Stock News Sentiment
     fii_inflow = stock.get('fii_inflow', False)
     sentiment = stock.get('news_sentiment', 'neutral').lower()
     if fii_inflow and sentiment in ['positive', 'neutral']:
@@ -132,7 +119,7 @@ def calculate_ai_hypothesis_score(stock: Dict[str, Any], market: Dict[str, Any])
         scores['r7_market_trend'] = 0
     verified_list.append(market.get('macro_fresh', True))
 
-    # 8. Nifty50 1% Supply/Demand Proximity
+    # 8. Nifty50 LTP Proximity to Supply/Demand (1% Band)
     nifty_ltp = market.get('nifty_ltp', 0.0)
     sup = market.get('nifty_nearest_supply', float('inf'))
     dem = market.get('nifty_nearest_demand', 0.0)
@@ -146,14 +133,14 @@ def calculate_ai_hypothesis_score(stock: Dict[str, Any], market: Dict[str, Any])
         scores['r8_nifty_zones'] = 0
     verified_list.append(True)
 
-    # 9. NSE All Futures Market Breadth
+    # 9. NSE All Futures Market Breadth (>50% Green/Red)
     advances = market.get('breadth_advances', 0)
     declines = market.get('breadth_declines', 0)
-    total_breadth = advances + declines
-    if total_breadth > 0:
-        if (advances / total_breadth) > 0.50:
+    tot = advances + declines
+    if tot > 0:
+        if (advances / tot) > 0.50:
             scores['r9_breadth'] = 1
-        elif (declines / total_breadth) > 0.50:
+        elif (declines / tot) > 0.50:
             scores['r9_breadth'] = -1
         else:
             scores['r9_breadth'] = 0
