@@ -1,22 +1,20 @@
 """
-AI Pro Institutional Trading Terminal - Complete Live-Verified UI
-- Authentic Data Freshness Enforcement (<15 Min rule strictly checked)
-- No fake 'Verified' tag: displays 'Unverified' if live data is stale or mock
-- Realistic varying Spot/Futures spreads, volume, and OI changes
-- Full 213 NSE Futures universe
-- Deep-linked Timeframe navigation directly opening TradingView interval
-- Zone Engine v2 Pine Parity execution
+AI Pro Institutional Trading Terminal - 100% Self-Contained Complete Engine
+- Zero External Import Errors: All Freshness & Scoring Logic Inbuilt
+- 15-Minute Strict Freshness Check (Market Closed = Last Close Valid, EOD/Delivery/Macro Exempt)
+- 10-Point AI Hypothesis Scoring System (-10 to +10) with Verified/Unverified Status
+- Top 10 Strong Buy (+10) and Top 10 Strong Sell (-10) strictly filtered
+- Full 213 Official NSE Futures Universe with Realistic Differentials
+- Near Timeframe links directly open TradingView in the exact chart timeframe
+- Clean Symbol Link and colored Futures LTP Price
 """
 
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+import numpy as np
+from datetime import datetime, time
 import pytz
 import os
-
-from terminal.timeframes import DEFAULT_TIMEFRAMES, ALL_AVAILABLE_TIMEFRAMES
-from terminal.services.market import is_market_open, validate_timestamp_freshness
-from terminal.services.signals import calculate_ai_hypothesis_score
 
 IST = pytz.timezone("Asia/Kolkata")
 
@@ -26,7 +24,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# स्टाइलिंग
+# टर्मिनल डार्क स्टाइलिंग
 st.markdown("""
 <style>
     .reportview-container, .main .block-container {
@@ -61,43 +59,54 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ----------------- 1. समय और 15-मिनट फ्रेशनेस सत्यापन लॉजिक -----------------
 current_ist = datetime.now(IST)
 update_time_str = current_ist.strftime("%d-%b-%Y %I:%M:%S %p IST")
-market_live = is_market_open(current_ist)
 
-# जाँचें कि क्या वास्तविक API कीज़ कॉन्फ़िगर हैं
-has_dhan = bool(os.getenv("DHAN_CLIENT_ID") or st.secrets.get("DHAN_CLIENT_ID", None))
-data_source_label = "Dhan HQ API (Live)" if has_dhan else "Yahoo Research / NSE Live"
+def is_market_open_check(now_ist: datetime = None) -> bool:
+    if now_ist is None:
+        now_ist = datetime.now(IST)
+    if now_ist.weekday() >= 5:  # शनिवार व रविवार बाजार बंद
+        return False
+    market_start = time(9, 15)
+    market_end = time(15, 30)
+    return market_start <= now_ist.time() <= market_end
 
-head_col1, head_col2 = st.columns([3, 1.4])
-with head_col1:
-    st.title("AI PRO INSTITUTIONAL TRADING TERMINAL")
-    st.markdown(f"""
-    **📡 Data Sources:** 
-    <span class="source-tag">{data_source_label}</span> 
-    <span class="source-tag">Macro: DXY, USDINR, TLT, Gold, Crude</span> 
-    <span class="source-tag">News: Live & Events Exempt</span>
-    """, unsafe_allow_html=True)
+market_live = is_market_open_check(current_ist)
 
-with head_col2:
-    status_color = "#089981" if market_live else "#2962FF"
-    status_label = "● Live Session (<15m Active)" if market_live else "● Last Close (Verified EOD)"
-    st.markdown(f"""
-    <div style="text-align: right; padding-top: 5px;">
-        <span class="update-badge">
-            <b>Feed Time:</b> {update_time_str} <br>
-            <span style="color: {status_color}; font-size: 11px; font-weight: bold;">{status_label}</span>
-        </span>
-    </div>
-    """, unsafe_allow_html=True)
+def validate_data_freshness_inbuilt(data_time: datetime, data_type: str = "quote") -> bool:
+    """
+    15 मिनट का नियम:
+    - EOD, Delivery %, FII/DII, Macro Events (DXY, USDINR, RBI) दिन में 1 बार आते हैं (सदैव Fresh)।
+    - यदि बाजार बंद है, तो अंतिम ट्रेडिंग सत्र के आधिकारिक डेटा को फ्रेश माना जाएगा।
+    - लाइव सत्र में 15 मिनट से पुराना डेटा या डमी डेटा Unverified होगा।
+    """
+    exempt_types = [
+        "eod", "delivery", "fii_dii", "macro_events", 
+        "corporate_action", "global_instruments", "rbi_events"
+    ]
+    if data_type.lower() in exempt_types:
+        return True
 
-tab_futures, tab_zone, tab_global, tab_news, tab_settings = st.tabs([
-    "NSE ALL FUTURE STOCKS", 
-    "Zone", 
-    "Global Zone", 
-    "News & Events", 
-    "Settings"
-])
+    now_t = datetime.now(IST)
+    if not is_market_open_check(now_t):
+        return True  # बाजार बंद होने पर लास्ट क्लोज पूरी तरह मान्य है
+
+    if data_time is None:
+        return False
+
+    if data_time.tzinfo is None:
+        data_time = IST.localize(data_time)
+    else:
+        data_time = data_time.astimezone(IST)
+
+    delta_sec = (now_t - data_time).total_seconds()
+    return 0 <= delta_sec <= (15 * 60)
+
+# ----------------- 2. टाइमफ्रेम और ट्रेडिंगव्यू लिंक हेल्पर -----------------
+DEFAULT_TIMEFRAMES = ["15m", "30m", "75m", "1h", "2h", "4h", "6h", "1d", "1w", "1M"]
+OPTIONAL_TIMEFRAMES = ["3m", "5m", "10m"]
+ALL_AVAILABLE_TIMEFRAMES = OPTIONAL_TIMEFRAMES + DEFAULT_TIMEFRAMES
 
 def map_tf_to_tv_interval(tf: str) -> str:
     t = tf.strip().lower()
@@ -129,6 +138,131 @@ def get_tv_tf_link(symbol: str, tf: str) -> str:
     prefix = "" if (symbol in ["XAUUSD", "XAGUSD", "SPOTCRUDE", "Aluminium", "NatGas", "DXY"]) else "NSE:"
     return f"https://in.tradingview.com/chart/?symbol={prefix}{clean}&interval={tv_interval}#{tf}"
 
+# ----------------- 3. 10-पॉइंट AI हाइपोथिसिस इंजन -----------------
+def evaluate_mtf_rule1_inbuilt(mtf_data: dict) -> int:
+    def check_group(tf_list):
+        bull, bear, count = 0, 0, 0
+        for tf in tf_list:
+            if tf in mtf_data:
+                d = mtf_data[tf]
+                count += 1
+                if d.get("ema35", 0) > d.get("ema100", 0) and d.get("ltp", 0) > d.get("vwap", 0) and d.get("volume_spike", False):
+                    bull += 1
+                elif d.get("ema35", 0) < d.get("ema100", 0) and d.get("ltp", 0) < d.get("vwap", 0) and d.get("volume_spike", False):
+                    bear += 1
+        if count > 0 and bull == count:
+            return 1
+        if count > 0 and bear == count:
+            return -1
+        return 0
+
+    lower = check_group(["15m", "30m"])
+    inter = check_group(["1h", "2h"])
+    higher = check_group(["4h", "6h", "1d", "1w", "1M"])
+
+    if lower == 1 and inter == 1 and higher == 1:
+        return 1
+    elif lower == -1 and inter == -1 and higher == -1:
+        return -1
+    return 0
+
+def calculate_ai_hypothesis_score_inbuilt(stock: dict, market: dict) -> dict:
+    s = {}
+    verified_flags = []
+
+    # 1. MTF Indicators
+    s['r1_mtf'] = evaluate_mtf_rule1_inbuilt(stock.get('mtf_indicators', {}))
+    verified_flags.append(stock.get('indicators_fresh', False))
+
+    # 2. Spot LTP vs Futures LTP
+    spot = stock.get('spot_ltp', 0.0)
+    fut = stock.get('futures_ltp', 0.0)
+    if spot and fut:
+        s['r2_future_premium'] = 1 if fut > spot else (-1 if fut < spot else 0)
+        verified_flags.append(stock.get('price_fresh', False))
+    else:
+        s['r2_future_premium'] = 0
+        verified_flags.append(False)
+
+    # 3. Delivery % vs Previous Day (दिन में 1 बार EOD - सदैव Valid)
+    deliv_c = stock.get('delivery_pct_curr', 0.0)
+    deliv_p = stock.get('delivery_pct_prev', 0.0)
+    s['r3_delivery'] = 1 if deliv_c > deliv_p else (-1 if deliv_c < deliv_p else 0)
+    verified_flags.append(True)
+
+    # 4. PCR
+    pcr = stock.get('pcr', 1.0)
+    s['r4_pcr'] = 1 if pcr > 1.5 else (-1 if pcr < 1.0 else 0)
+    verified_flags.append(stock.get('oi_fresh', False))
+
+    # 5. Buildup Classification
+    buildup = str(stock.get('buildup', '')).lower()
+    if 'long buildup' in buildup:
+        s['r5_buildup'] = 1
+    elif 'short buildup' in buildup:
+        s['r5_buildup'] = -1
+    else:
+        s['r5_buildup'] = 0
+    verified_flags.append(stock.get('oi_fresh', False))
+
+    # 6. Global/Macro Finance + FII Flow + Stock News Sentiment
+    fii_inflow = stock.get('fii_inflow', False)
+    sentiment = stock.get('news_sentiment', 'neutral').lower()
+    macro_bullish = market.get('macro_bullish', True)
+    if fii_inflow and macro_bullish and sentiment in ['positive', 'neutral']:
+        s['r6_macro_fii'] = 1
+    elif not fii_inflow and not macro_bullish and sentiment in ['negative', 'neutral']:
+        s['r6_macro_fii'] = -1
+    else:
+        s['r6_macro_fii'] = 0
+    verified_flags.append(True)
+
+    # 7. Gift Nifty & NIFTY50 Positive/Negative
+    gift = market.get('gift_nifty_pct', 0.0)
+    nifty = market.get('nifty50_pct', 0.0)
+    s['r7_market_trend'] = 1 if (gift > 0 and nifty > 0) else (-1 if (gift < 0 and nifty < 0) else 0)
+    verified_flags.append(market.get('macro_fresh', False))
+
+    # 8. Nifty50 LTP Proximity to Supply/Demand (1% Band)
+    n_ltp = market.get('nifty_ltp', 0.0)
+    sup = market.get('nifty_nearest_supply', float('inf'))
+    dem = market.get('nifty_nearest_demand', 0.0)
+    sup_within = (sup <= n_ltp * 1.01) if n_ltp else False
+    dem_within = (dem >= n_ltp * 0.99) if n_ltp else False
+    if not sup_within and dem_within:
+        s['r8_nifty_zones'] = 1
+    elif not dem_within and sup_within:
+        s['r8_nifty_zones'] = -1
+    else:
+        s['r8_nifty_zones'] = 0
+    verified_flags.append(True)
+
+    # 9. NSE All Futures Market Breadth (>50% Green/Red)
+    green = market.get('breadth_advances', 0)
+    red = market.get('breadth_declines', 0)
+    tot = green + red
+    if tot > 0:
+        s['r9_breadth'] = 1 if (green / tot > 0.5) else (-1 if (red / tot > 0.5) else 0)
+    else:
+        s['r9_breadth'] = 0
+    verified_flags.append(True)
+
+    # 10. Volume vs 5-Day Average Volume
+    vol = stock.get('current_volume', 0)
+    avg_vol = stock.get('avg_5d_volume', 0)
+    s['r10_vol_5d'] = 1 if vol > avg_vol else (-1 if vol < avg_vol else 0)
+    verified_flags.append(stock.get('volume_fresh', False))
+
+    total = sum(s.values())
+    is_verified = all(verified_flags)
+
+    return {
+        "score": total,
+        "details": s,
+        "data_status": "Verified" if is_verified else "Unverified"
+    }
+
+# ----------------- 4. 213 आधिकारिक स्टॉक्स यूनिवर्स -----------------
 ALL_NSE_FUTURES_SYMBOLS = [
     "360ONE", "AARTIIND", "ABB", "ABBOTINDIA", "ABCAPITAL", "ABFRL", "ACC", "ADANIENT",
     "ADANIGREEN", "ADANIPORTS", "ADANIENSOL", "ALKEM", "AMBUJACEM", "ANGELONE", "APLAPOLLO",
@@ -162,7 +296,6 @@ ALL_NSE_FUTURES_SYMBOLS = [
     "WIPRO", "YESBANK", "ZYDUSLIFE"
 ]
 
-# वास्तविक मार्केट डेटा (NSE आधिकारिक टिक डेटा)
 OFFICIAL_MARKET_SNAPSHOT = {
     "BHARTIARTL": {"spot": 1682.00, "fut": 1688.50, "chg": 1.30, "vol": 2450000, "oi_chg": 2.90, "pe_oi": 1540000, "buildup": "Long Buildup", "pcr": 1.55, "deliv": 48.2, "deliv_p": 44.0, "time": current_ist},
     "CIPLA": {"spot": 1836.00, "fut": 1836.37, "chg": 1.92, "vol": 2286586, "oi_chg": -0.96, "pe_oi": 890000, "buildup": "Short Covering", "pcr": 1.25, "deliv": 42.0, "deliv_p": 41.5, "time": current_ist},
@@ -191,6 +324,39 @@ market_context = {
     "macro_bullish": True,
     "macro_fresh": True
 }
+
+has_dhan = bool(os.getenv("DHAN_CLIENT_ID") or st.secrets.get("DHAN_CLIENT_ID", None))
+data_source_label = "Dhan HQ API (Live)" if has_dhan else "Yahoo Research / NSE Live"
+
+head_col1, head_col2 = st.columns([3, 1.4])
+with head_col1:
+    st.title("AI PRO INSTITUTIONAL TRADING TERMINAL")
+    st.markdown(f"""
+    **📡 Data Sources:** 
+    <span class="source-tag">{data_source_label}</span> 
+    <span class="source-tag">Macro: DXY, USDINR, TLT, Gold, Crude</span> 
+    <span class="source-tag">News: Live & Events Exempt</span>
+    """, unsafe_allow_html=True)
+
+with head_col2:
+    status_color = "#089981" if market_live else "#2962FF"
+    status_label = "● Live Session (<15m Active)" if market_live else "● Last Close (Verified EOD)"
+    st.markdown(f"""
+    <div style="text-align: right; padding-top: 5px;">
+        <span class="update-badge">
+            <b>Feed Time:</b> {update_time_str} <br>
+            <span style="color: {status_color}; font-size: 11px; font-weight: bold;">{status_label}</span>
+        </span>
+    </div>
+    """, unsafe_allow_html=True)
+
+tab_futures, tab_zone, tab_global, tab_news, tab_settings = st.tabs([
+    "NSE ALL FUTURE STOCKS", 
+    "Zone", 
+    "Global Zone", 
+    "News & Events", 
+    "Settings"
+])
 
 @st.cache_data(ttl=30)
 def generate_verified_market_universe():
@@ -225,14 +391,13 @@ def generate_verified_market_universe():
             pcr = 1.15
             deliv_c = 40.0
             deliv_p = 40.0
-            tick_time = None  # लाइव अनुपलब्ध
+            tick_time = None
             source = "Yahoo Fallback"
 
         diff_pct = round(((fut - spot) / spot) * 100.0, 2)
         fut_chg = round(chg + (diff_pct * 0.1), 2)
 
-        # 15 मिनट की सख्त समय-सीमा जांच
-        is_fresh = validate_timestamp_freshness(tick_time, data_type="quote") if is_live_available else False
+        is_fresh = validate_data_freshness_inbuilt(tick_time, data_type="quote") if is_live_available else False
 
         stock_payload = {
             "spot_ltp": spot,
@@ -262,8 +427,7 @@ def generate_verified_market_universe():
             }
         }
 
-        # 10-Point AI Hypothesis Score
-        score_res = calculate_ai_hypothesis_score(stock_payload, market_context)
+        score_res = calculate_ai_hypothesis_score_inbuilt(stock_payload, market_context)
         final_score = score_res["score"]
         status_label = score_res["data_status"]
 
@@ -317,7 +481,6 @@ def color_change(val):
 
 # ----------------- टैब 1: NSE ALL FUTURE STOCKS -----------------
 with tab_futures:
-    # केवल पूर्ण 10 में 10 और -10 में -10 स्टॉक्स
     top_buy = df_all[df_all["Raw_Score"] == 10].head(10)
     top_sell = df_all[df_all["Raw_Score"] == -10].head(10)
 
@@ -493,7 +656,7 @@ with tab_zone:
 # ----------------- टैब 3: GLOBAL ZONE -----------------
 with tab_global:
     st.markdown("### 🌐 GLOBAL INSTRUMENTS — MULTI-TIMEFRAME ZONE SCANNER")
-    st.caption("DXY, US10Y, Gold, Crude आदि के लिए zone_core इंजन और इनबिल्ट TradingView लिंक। टाइमफ्रेम टच करने पर सीधे उसी टाइमफ्रेम चार्ट पर खुलेगा।")
+    st.caption("DXY, US10Y, Gold, Crude आदि के लिए इनबिल्ट TradingView लिंक। टाइमफ्रेम टच करने पर सीधे उसी टाइमफ्रेम चार्ट पर खुलेगा।")
     if st.button("🚀 Refresh Global Zones"):
         st.rerun()
 
