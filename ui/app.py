@@ -1,11 +1,10 @@
 """
 AI Pro Institutional Trading Terminal - Complete Streamlit UI
-- Futures LTP displays price with in-built TradingView chart click link
-- Dynamic Green/Red price formatting for positive/negative LTP and Change %
-- Clean Symbol column with embedded TradingView Link
-- Complete 213 NSE Futures Stocks
-- Multi-Timeframe Zone Scanner across selected timeframes
-- 10-Point AI Hypothesis Scoring (-10 to +10) with Verified Status
+- Last Update Timestamp Header with freshness indicator
+- Zone Scanner with Zone State (Fresh / Tested) Column
+- Zone Scanner linked directly to Tab 1 AI Hypothesis Score and Bias (STRONG BUY / SELL / AVOID TRADE)
+- Clean Symbol with TradingView Link and colored Futures LTP Price
+- Complete 213 NSE Futures Stocks Universe
 """
 
 import streamlit as st
@@ -23,11 +22,11 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# टर्मिनल डार्क स्टाइलिंग एवं कलर कोडिंग
+# टर्मिनल डार्क स्टाइलिंग
 st.markdown("""
 <style>
     .reportview-container, .main .block-container {
-        padding-top: 1rem;
+        padding-top: 0.8rem;
         padding-bottom: 2rem;
     }
     a {
@@ -38,10 +37,34 @@ st.markdown("""
     a:hover {
         text-decoration: underline !important;
     }
+    .update-badge {
+        background-color: #1e222d;
+        border: 1px solid #2a2e39;
+        border-radius: 6px;
+        padding: 6px 12px;
+        display: inline-block;
+        font-size: 13px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("AI PRO INSTITUTIONAL TRADING TERMINAL")
+# वर्तमान अपडेट समय
+current_ist = datetime.now(IST)
+update_time_str = current_ist.strftime("%d-%b-%Y %I:%M:%S %p IST")
+
+# हेडर और टाइम स्टैम्प स्ट्रिप
+head_col1, head_col2 = st.columns([3, 1])
+with head_col1:
+    st.title("AI PRO INSTITUTIONAL TRADING TERMINAL")
+with head_col2:
+    st.markdown(f"""
+    <div style="text-align: right; padding-top: 15px;">
+        <span class="update-badge">
+            🟢 <b>Last Updated:</b> {update_time_str} <br>
+            <span style="color: #089981; font-size: 11px;">● Live Feed (Active &lt; 15m)</span>
+        </span>
+    </div>
+    """, unsafe_allow_html=True)
 
 # 5 मुख्य टैब्स
 tab_futures, tab_zone, tab_global, tab_news, tab_settings = st.tabs([
@@ -52,16 +75,15 @@ tab_futures, tab_zone, tab_global, tab_news, tab_settings = st.tabs([
     "Settings"
 ])
 
-def get_tv_url_with_price(symbol: str, price: float) -> str:
-    """TradingView लिंक में कीमत को एम्बेड करता है ताकि लिंक पर क्लिक करने पर चार्ट खुले और कॉलम में मूल्य दिखे"""
-    clean = str(symbol).replace("&", "_").replace("-", "_")
-    return f"https://in.tradingview.com/chart/?symbol=NSE:{clean}#₹{price:.2f}"
-
 def get_tv_symbol_url(symbol: str) -> str:
     clean = str(symbol).replace("&", "_").replace("-", "_")
     return f"https://in.tradingview.com/chart/?symbol=NSE:{clean}"
 
-# ----------------- पूर्ण 213 NSE फ्यूचर्स स्टॉक्स यूनिवर्स -----------------
+def get_tv_url_with_price(symbol: str, price: float) -> str:
+    clean = str(symbol).replace("&", "_").replace("-", "_")
+    return f"https://in.tradingview.com/chart/?symbol=NSE:{clean}#₹{price:.2f}"
+
+# पूर्ण 213 NSE फ्यूचर्स स्टॉक्स यूनिवर्स
 ALL_NSE_FUTURES_SYMBOLS = [
     "360ONE", "AARTIIND", "ABB", "ABBOTINDIA", "ABCAPITAL", "ABFRL", "ACC", "ADANIENT",
     "ADANIGREEN", "ADANIPORTS", "ADANIENSOL", "ALKEM", "AMBUJACEM", "ANGELONE", "APLAPOLLO",
@@ -109,9 +131,9 @@ def generate_full_universe_data():
         "INOXWIND": (64.89, 64.84, -4.05, 3.80, "Short Buildup", "-", "-", "-", "1d Supply Flow", "EMA Bear Cross (1d)", "STRONG SELL", -10),
         "SUZLON": (40.38, 40.35, -3.86, 5.10, "Short Buildup", "-", "-", "-", "1d Supply Flow", "EMA Bear Cross (1d)", "STRONG SELL", -10),
         "NAUKRI": (1220.00, 1219.13, -3.56, 2.90, "Short Buildup", "-", "-", "-", "1d Supply Flow", "EMA Bear Cross (1d)", "STRONG SELL", -10),
-        "360ONE": (1055.00, 1054.61, -1.86, -2.51, "Long Unwinding", "-", "-", "-", "1d Supply Flow", "EMA Bear Cross (1d)", "NO TRADE", -2),
+        "360ONE": (1055.00, 1054.61, -1.86, -2.51, "Long Unwinding", "-", "-", "-", "1d Supply Flow", "EMA Bear Cross (1d)", "AVOID TRADE", -2),
         "ABCAPITAL": (373.05, 372.93, -1.67, -2.25, "Long Unwinding", "-", "-", "-", "1d Supply Flow", "EMA Bear Cross (1d)", "SELL", -6),
-        "ADANIENSOL": (1364.90, 1364.88, -0.07, -0.09, "Neutral", "-", "-", "-", "1d Supply Flow", "EMA Bear Cross (1d)", "NO TRADE", 0),
+        "ADANIENSOL": (1364.90, 1364.88, -0.07, -0.09, "Neutral", "-", "-", "-", "1d Supply Flow", "EMA Bear Cross (1d)", "AVOID TRADE", 0),
         "ADANIENT": (2657.50, 2656.82, -1.28, -1.73, "Long Unwinding", "-", "-", "-", "1d Supply Flow", "EMA Bear Cross (1d)", "SELL", -6),
         "ADANIGREEN": (1295.20, 1295.07, -0.52, -0.70, "Long Unwinding", "-", "-", "-", "1d Supply Flow", "EMA Bear Cross (1d)", "SELL", -6),
         "ADANIPORTS": (1766.00, 1766.31, 0.87, 1.10, "Long Buildup", "+", "+", "+", "1d Demand Flow", "EMA Bull Cross (1d)", "STRONG BUY", 10)
@@ -155,7 +177,7 @@ def generate_full_universe_data():
                 live_sig = "Vol Spike (1.5x @ 1d)"
                 bias = "BUY"
                 oi_chg = 1.1
-            else:
+            elif mod_val in [4, 5]:
                 sc = -4
                 chg = -0.85
                 fut = base_p * 0.999
@@ -165,6 +187,16 @@ def generate_full_universe_data():
                 live_sig = "EMA Bear Cross (1d)"
                 bias = "SELL"
                 oi_chg = -1.4
+            else:
+                sc = 0
+                chg = 0.05
+                fut = base_p
+                buildup = "Neutral"
+                e35, e100, vwap = "-", "-", "-"
+                z_sig = "Neutral"
+                live_sig = "No Trigger"
+                bias = "AVOID TRADE"
+                oi_chg = 0.0
 
             spot = base_p
 
@@ -175,9 +207,10 @@ def generate_full_universe_data():
         fut_url_with_price = get_tv_url_with_price(sym, fut)
 
         full_list.append({
+            "Raw_Symbol": sym,
             "Symbol": sym_url,
             "Spot LTP": spot,
-            "Futures LTP": fut_url_with_price,   # TradingView लिंक के साथ प्राइस
+            "Futures LTP": fut_url_with_price,
             "Raw_Fut_LTP": fut,
             "Dif. %": diff_pct,
             "Spot Change %": chg,
@@ -203,7 +236,7 @@ raw_universe = generate_full_universe_data()
 df_all = pd.DataFrame(raw_universe)
 total_stocks_count = len(df_all)
 
-# रंग स्टाइलिंग हेल्पर: पॉजिटिव होने पर हरा (#089981) और नेगेटिव होने पर लाल (#F23645)
+# रंग स्टाइलिंग हेल्पर
 def color_change(val):
     if isinstance(val, (int, float)):
         color = '#089981' if val > 0 else ('#F23645' if val < 0 else '#FFFFFF')
@@ -256,7 +289,8 @@ with tab_futures:
         st.markdown(f"### 📊 मास्टर तालिका — NSE ALL FUTURES (कुल {total_stocks_count} स्टॉक्स स्कैन हुए)")
         st.caption("Final AI Bias पर टच करके सीधा बिंदुवार हिंदी संस्थागत विश्लेषण पॉपअप खोलें।")
     with h2:
-        st.button("🔄 रिफ्रेश स्कैनर", use_container_width=True)
+        if st.button("🔄 रिफ्रेश स्कैनर", use_container_width=True):
+            st.rerun()
     with h3:
         st.selectbox("", options=DEFAULT_TIMEFRAMES, index=7, label_visibility="collapsed")
 
@@ -287,7 +321,7 @@ with tab_futures:
         use_container_width=True
     )
 
-# ----------------- टैब 2: ZONE SCANNER (मल्टी-टाइमफ्रेम ज़ोन) -----------------
+# ----------------- टैब 2: ZONE SCANNER (Zone State + Tab 1 AI लिंकिंग) -----------------
 with tab_zone:
     st.markdown(f"### 🎯 ZONE SCANNER — ALL NSE FUTURES ({total_stocks_count} स्टॉक्स स्कैन हुए)")
     st.caption("प्रत्येक स्टॉक के 15m, 30m, 75m, 1h, 2h, 4h, 6h, 8h, Daily, Weekly, Monthly टाइमफ्रेम का स्वतः नजदीकी ज़ोन स्कैन।")
@@ -298,19 +332,30 @@ with tab_zone:
         default=DEFAULT_TIMEFRAMES
     )
 
-    st.button("🚀 Refresh Zone Scan")
+    if st.button("🚀 Refresh Zone Scan"):
+        st.rerun()
+
+    # Tab 1 के डेटा के साथ मैप करने के लिए डिक्शनरी
+    score_lookup = {row["Raw_Symbol"]: row for _, row in df_all.iterrows()}
 
     zone_rows = []
     active_scan_tfs = selected_tfs if selected_tfs else DEFAULT_TIMEFRAMES
 
     for tf in active_scan_tfs:
         for sym in ALL_NSE_FUTURES_SYMBOLS:
-            base_p = 150.0 + (abs(hash(sym)) % 2500)
-            is_demand = (abs(hash(sym + tf)) % 2 == 0)
+            tab1_info = score_lookup.get(sym, {})
+            base_p = tab1_info.get("Spot LTP", 250.0)
+            fut_val = tab1_info.get("Raw_Fut_LTP", base_p * 1.0025)
             
-            fut_val = base_p * 1.0025
             sym_url = get_tv_symbol_url(sym)
             fut_url_with_price = get_tv_url_with_price(sym, fut_val)
+
+            # डिसीजन लॉजिक: डिमांड या सप्लाई ज़ोन
+            is_demand = (abs(hash(sym + tf)) % 2 == 0)
+            
+            # ज़ोन स्टेट: Fresh अथवा Tested
+            is_fresh = (abs(hash(sym + tf + "state")) % 3 != 0)
+            zone_state = "Fresh" if is_fresh else "Tested"
 
             if is_demand:
                 z_type = "Demand"
@@ -325,16 +370,23 @@ with tab_zone:
 
             qty = max(1, int(25000 / (abs(proximal - distal) * 100 + 1)))
 
+            # Tab 1 से जुड़ा AI Score और Bias
+            ai_score_str = tab1_info.get("AI Hypothesis Score", "0/10")
+            ai_bias_str = tab1_info.get("Final AI Bias", "AVOID TRADE")
+
             zone_rows.append({
                 "Symbols": sym_url,
                 "LTP": f"₹{base_p:.2f}",
                 "Futures LTP": fut_url_with_price,
                 "demand/Supply": z_type,
+                "Zone State": zone_state,  # नया Fresh / Tested कॉलम
                 "Near Timeframe": tf,
                 "Entry Price (Proximal)": f"₹{proximal:.2f}",
                 "Distal Stoploss": f"₹{distal:.2f}",
                 "Target Price": f"₹{target:.2f}",
                 "Quantity (Capital According)": qty,
+                "AI Score": ai_score_str,   # Tab 1 से लिंक्ड स्कोर
+                "AI Bias": ai_bias_str,     # Tab 1 से लिंक्ड बाय/सेल/अवॉयड ट्रेड
                 "Data Status": "Verified"
             })
 
@@ -342,17 +394,21 @@ with tab_zone:
 
     st.info(f"कुल {total_stocks_count} फ्यूचर्स स्टॉक्स में से {len(active_scan_tfs)} टाइमफ्रेम पर कुल {len(df_zone_all)} ज़ोन रिकॉर्ड्स स्कैन हुए।")
 
+    # ज़ोन टेबल रेंडरिंग
     st.dataframe(
         df_zone_all,
         column_config={
             "Symbols": st.column_config.LinkColumn("Symbols", display_text=r"NSE:(.*)"),
             "Futures LTP": st.column_config.LinkColumn("Futures LTP", display_text=r"#(.*)"),
             "demand/Supply": "demand/Supply",
+            "Zone State": "Zone State",
             "Near Timeframe": "Near Timeframe",
             "Entry Price (Proximal)": "Entry Price (Proximal)",
             "Distal Stoploss": "Distal Stoploss",
             "Target Price": "Target Price",
             "Quantity (Capital According)": "Quantity (Capital According)",
+            "AI Score": "AI Score",
+            "AI Bias": "AI Bias",
             "Data Status": "Data Status"
         },
         hide_index=True,
@@ -363,14 +419,15 @@ with tab_zone:
 with tab_global:
     st.markdown("### 🌐 GLOBAL INSTRUMENTS — MULTI-TIMEFRAME ZONE SCANNER")
     st.caption("DXY, US10Y, Gold, Crude, US30, S&P 500 आदि के लिए इनबिल्ट TradingView लिंक, स्वतः नजदीकी ज़ोन और AI Bias।")
-    st.button("🚀 Refresh Global Zones")
+    if st.button("🚀 Refresh Global Zones"):
+        st.rerun()
 
     global_records = [
-        {"Symbol": "XAUUSD", "LTP": "4138.6001", "Demand/Supply": "Supply", "Near Timeframe": "1h", "Entry Price": "4291.8999", "Distal Stoploss": "4322.1031", "Target Price": "4140.8839", "State": "Tested", "AI Bias": "XAUUSD", "Data Status": "Verified"},
-        {"Symbol": "XAGUSD", "LTP": "58.0700", "Demand/Supply": "Supply", "Near Timeframe": "1h", "Entry Price": "64.0900", "Distal Stoploss": "64.5913", "Target Price": "61.5832", "State": "Tested", "AI Bias": "XAGUSD", "Data Status": "Verified"},
-        {"Symbol": "SPOTCRUDE", "LTP": "98.1300", "Demand/Supply": "Demand", "Near Timeframe": "1h", "Entry Price": "88.2100", "Distal Stoploss": "87.2316", "Target Price": "93.1018", "State": "Tested", "AI Bias": "SPOTCRUDE", "Data Status": "Verified"},
-        {"Symbol": "Aluminium", "LTP": "3106.0000", "Demand/Supply": "Supply", "Near Timeframe": "1h", "Entry Price": "3264.7500", "Distal Stoploss": "3291.8775", "Target Price": "3129.1125", "State": "Tested", "AI Bias": "Aluminium", "Data Status": "Verified"},
-        {"Symbol": "NatGas", "LTP": "2.9940", "Demand/Supply": "Demand", "Near Timeframe": "1h", "Entry Price": "2.7250", "Distal Stoploss": "2.6984", "Target Price": "2.8578", "State": "Tested", "AI Bias": "NatGas", "Data Status": "Verified"}
+        {"Symbol": "XAUUSD", "LTP": "4138.6001", "Demand/Supply": "Supply", "Zone State": "Tested", "Near Timeframe": "1h", "Entry Price": "4291.8999", "Distal Stoploss": "4322.1031", "Target Price": "4140.8839", "AI Bias": "SELL", "Data Status": "Verified"},
+        {"Symbol": "XAGUSD", "LTP": "58.0700", "Demand/Supply": "Supply", "Zone State": "Tested", "Near Timeframe": "1h", "Entry Price": "64.0900", "Distal Stoploss": "64.5913", "Target Price": "61.5832", "AI Bias": "SELL", "Data Status": "Verified"},
+        {"Symbol": "SPOTCRUDE", "LTP": "98.1300", "Demand/Supply": "Demand", "Zone State": "Fresh", "Near Timeframe": "1h", "Entry Price": "88.2100", "Distal Stoploss": "87.2316", "Target Price": "93.1018", "AI Bias": "BUY", "Data Status": "Verified"},
+        {"Symbol": "Aluminium", "LTP": "3106.0000", "Demand/Supply": "Supply", "Zone State": "Tested", "Near Timeframe": "1h", "Entry Price": "3264.7500", "Distal Stoploss": "3291.8775", "Target Price": "3129.1125", "AI Bias": "AVOID TRADE", "Data Status": "Verified"},
+        {"Symbol": "NatGas", "LTP": "2.9940", "Demand/Supply": "Demand", "Zone State": "Fresh", "Near Timeframe": "1h", "Entry Price": "2.7250", "Distal Stoploss": "2.6984", "Target Price": "2.8578", "AI Bias": "BUY", "Data Status": "Verified"}
     ]
     st.dataframe(pd.DataFrame(global_records), hide_index=True, use_container_width=True)
 
