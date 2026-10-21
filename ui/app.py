@@ -1,10 +1,11 @@
 """
 AI Pro Institutional Trading Terminal - Complete Streamlit UI
-- All 213 NSE Futures Stocks
-- Live Futures LTP Price display (No symbol duplicate in Futures LTP)
-- Embedded TradingView Chart Link on Symbols
-- Scan count visible in headers across all tabs
-- 10-Point AI Hypothesis Scoring (-10 to +10) with Verified/Unverified status
+- Futures LTP displays price with in-built TradingView chart click link
+- Dynamic Green/Red price formatting for positive/negative LTP and Change %
+- Clean Symbol column with embedded TradingView Link
+- Complete 213 NSE Futures Stocks
+- Multi-Timeframe Zone Scanner across selected timeframes
+- 10-Point AI Hypothesis Scoring (-10 to +10) with Verified Status
 """
 
 import streamlit as st
@@ -22,7 +23,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# टर्मिनल डार्क स्टाइलिंग
+# टर्मिनल डार्क स्टाइलिंग एवं कलर कोडिंग
 st.markdown("""
 <style>
     .reportview-container, .main .block-container {
@@ -51,7 +52,12 @@ tab_futures, tab_zone, tab_global, tab_news, tab_settings = st.tabs([
     "Settings"
 ])
 
-def get_tv_url(symbol: str) -> str:
+def get_tv_url_with_price(symbol: str, price: float) -> str:
+    """TradingView लिंक में कीमत को एम्बेड करता है ताकि लिंक पर क्लिक करने पर चार्ट खुले और कॉलम में मूल्य दिखे"""
+    clean = str(symbol).replace("&", "_").replace("-", "_")
+    return f"https://in.tradingview.com/chart/?symbol=NSE:{clean}#₹{price:.2f}"
+
+def get_tv_symbol_url(symbol: str) -> str:
     clean = str(symbol).replace("&", "_").replace("-", "_")
     return f"https://in.tradingview.com/chart/?symbol=NSE:{clean}"
 
@@ -91,10 +97,8 @@ ALL_NSE_FUTURES_SYMBOLS = [
 
 @st.cache_data(ttl=60)
 def generate_full_universe_data():
-    """पूरे 213 स्टॉक्स के लिए वास्तविक डेटा और फ्यूचर्स LTP तैयार करें"""
     full_list = []
     
-    # बेंचमार्क स्टॉक्स
     benchmark_map = {
         "UNIONBANK": (180.70, 180.89, 5.25, 4.10, "Long Buildup", "+", "+", "+", "1d Demand Flow", "EMA Bull Cross (1d)", "STRONG BUY", 10),
         "PNB": (121.90, 122.02, 4.82, 3.90, "Long Buildup", "+", "+", "+", "1d Demand Flow", "Vol Spike (2.85x @ 1d)", "STRONG BUY", 10),
@@ -167,14 +171,17 @@ def generate_full_universe_data():
         diff_pct = ((fut - spot) / spot) * 100.0
         fut_chg = chg + (diff_pct * 0.1)
 
-        url = get_tv_url(sym)
+        sym_url = get_tv_symbol_url(sym)
+        fut_url_with_price = get_tv_url_with_price(sym, fut)
+
         full_list.append({
-            "Symbol": url,
-            "Spot LTP": f"₹{spot:.2f}",
-            "Futures LTP": f"₹{fut:.2f}",   # यहाँ सिर्फ फ्यूचर्स का LTP दिखेगा, सिंबल नाम नहीं
-            "Dif. %": f"{diff_pct:+.2f}%",
-            "Spot Change %": f"{chg:+.2f}%",
-            "Futures Change %": f"{fut_chg:+.2f}%",
+            "Symbol": sym_url,
+            "Spot LTP": spot,
+            "Futures LTP": fut_url_with_price,   # TradingView लिंक के साथ प्राइस
+            "Raw_Fut_LTP": fut,
+            "Dif. %": diff_pct,
+            "Spot Change %": chg,
+            "Futures Change %": fut_chg,
             "Selected-Timeframe Volume": f"{(1200000 + (abs(hash(sym)) % 3000000)):,}",
             "Volume Spike Ratio": f"{(1.2 + (abs(hash(sym)) % 25) / 10.0):.2f}x",
             "Futures OI Change %": f"{oi_chg:+.2f}%",
@@ -196,6 +203,13 @@ raw_universe = generate_full_universe_data()
 df_all = pd.DataFrame(raw_universe)
 total_stocks_count = len(df_all)
 
+# रंग स्टाइलिंग हेल्पर: पॉजिटिव होने पर हरा (#089981) और नेगेटिव होने पर लाल (#F23645)
+def color_change(val):
+    if isinstance(val, (int, float)):
+        color = '#089981' if val > 0 else ('#F23645' if val < 0 else '#FFFFFF')
+        return f'color: {color}; font-weight: 600;'
+    return ''
+
 # ----------------- टैब 1: NSE ALL FUTURE STOCKS -----------------
 with tab_futures:
     top_buy = df_all[df_all["Raw_Score"] == 10].head(10)
@@ -204,10 +218,15 @@ with tab_futures:
     cb, cs = st.columns(2)
     with cb:
         st.subheader("TOP 10 BUY (बहु-कारक AI)")
+        styled_buy = top_buy[["Symbol", "Spot LTP", "Futures LTP", "Dif. %", "Spot Change %", "Volume Spike Ratio"]].style\
+            .format({"Spot LTP": "₹{:.2f}", "Dif. %": "{:+.2f}%", "Spot Change %": "{:+.2f}%"})\
+            .map(color_change, subset=["Spot Change %", "Dif. %"])
+        
         st.dataframe(
-            top_buy[["Symbol", "Spot LTP", "Futures LTP", "Dif. %", "Spot Change %", "Volume Spike Ratio"]],
+            styled_buy,
             column_config={
-                "Symbol": st.column_config.LinkColumn("Symbol", display_text=r"NSE:(.*)")
+                "Symbol": st.column_config.LinkColumn("Symbol", display_text=r"NSE:(.*)"),
+                "Futures LTP": st.column_config.LinkColumn("Futures LTP", display_text=r"#(.*)")
             },
             hide_index=True,
             use_container_width=True
@@ -215,10 +234,15 @@ with tab_futures:
 
     with cs:
         st.subheader("TOP 10 SELL (बहु-कारक AI)")
+        styled_sell = top_sell[["Symbol", "Spot LTP", "Futures LTP", "Dif. %", "Spot Change %", "Volume Spike Ratio"]].style\
+            .format({"Spot LTP": "₹{:.2f}", "Dif. %": "{:+.2f}%", "Spot Change %": "{:+.2f}%"})\
+            .map(color_change, subset=["Spot Change %", "Dif. %"])
+
         st.dataframe(
-            top_sell[["Symbol", "Spot LTP", "Futures LTP", "Dif. %", "Spot Change %", "Volume Spike Ratio"]],
+            styled_sell,
             column_config={
-                "Symbol": st.column_config.LinkColumn("Symbol", display_text=r"NSE:(.*)")
+                "Symbol": st.column_config.LinkColumn("Symbol", display_text=r"NSE:(.*)"),
+                "Futures LTP": st.column_config.LinkColumn("Futures LTP", display_text=r"#(.*)")
             },
             hide_index=True,
             use_container_width=True
@@ -226,7 +250,7 @@ with tab_futures:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # मास्टर तालिका हेडर — स्पष्ट संख्या
+    # मास्टर तालिका हेडर
     h1, h2, h3 = st.columns([2, 1, 1])
     with h1:
         st.markdown(f"### 📊 मास्टर तालिका — NSE ALL FUTURES (कुल {total_stocks_count} स्टॉक्स स्कैन हुए)")
@@ -243,11 +267,20 @@ with tab_futures:
         "Zone Signal", "Live Signals Highlight", "Final AI Bias", "AI Hypothesis Score", "Data Status"
     ]
 
+    styled_master = df_all[master_cols].style\
+        .format({
+            "Spot LTP": "₹{:.2f}", 
+            "Dif. %": "{:+.2f}%", 
+            "Spot Change %": "{:+.2f}%",
+            "Futures Change %": "{:+.2f}%"
+        })\
+        .map(color_change, subset=["Spot Change %", "Futures Change %", "Dif. %"])
+
     st.dataframe(
-        df_all[master_cols],
+        styled_master,
         column_config={
             "Symbol": st.column_config.LinkColumn("Symbol", display_text=r"NSE:(.*)"),
-            "Futures LTP": "Futures LTP",
+            "Futures LTP": st.column_config.LinkColumn("Futures LTP", display_text=r"#(.*)"),
             "Data Status": "Data Status"
         },
         hide_index=True,
@@ -256,7 +289,6 @@ with tab_futures:
 
 # ----------------- टैब 2: ZONE SCANNER (मल्टी-टाइमफ्रेम ज़ोन) -----------------
 with tab_zone:
-    # स्पष्ट संख्या हेडर में जोड़ दी गई है
     st.markdown(f"### 🎯 ZONE SCANNER — ALL NSE FUTURES ({total_stocks_count} स्टॉक्स स्कैन हुए)")
     st.caption("प्रत्येक स्टॉक के 15m, 30m, 75m, 1h, 2h, 4h, 6h, 8h, Daily, Weekly, Monthly टाइमफ्रेम का स्वतः नजदीकी ज़ोन स्कैन।")
 
@@ -268,18 +300,17 @@ with tab_zone:
 
     st.button("🚀 Refresh Zone Scan")
 
-    # सभी 213 स्टॉक्स और चुने गए प्रत्येक टाइमफ्रेम का ज़ोन
     zone_rows = []
     active_scan_tfs = selected_tfs if selected_tfs else DEFAULT_TIMEFRAMES
 
     for tf in active_scan_tfs:
         for sym in ALL_NSE_FUTURES_SYMBOLS:
-            url = get_tv_url(sym)
             base_p = 150.0 + (abs(hash(sym)) % 2500)
             is_demand = (abs(hash(sym + tf)) % 2 == 0)
             
-            # असली फ्यूचर्स LTP गणना
             fut_val = base_p * 1.0025
+            sym_url = get_tv_symbol_url(sym)
+            fut_url_with_price = get_tv_url_with_price(sym, fut_val)
 
             if is_demand:
                 z_type = "Demand"
@@ -295,9 +326,9 @@ with tab_zone:
             qty = max(1, int(25000 / (abs(proximal - distal) * 100 + 1)))
 
             zone_rows.append({
-                "Symbols": url,
+                "Symbols": sym_url,
                 "LTP": f"₹{base_p:.2f}",
-                "Futures LTP": f"₹{fut_val:.2f}",  # यहाँ अब असली Futures LTP दिखेगा (सिंबल नाम नहीं)
+                "Futures LTP": fut_url_with_price,
                 "demand/Supply": z_type,
                 "Near Timeframe": tf,
                 "Entry Price (Proximal)": f"₹{proximal:.2f}",
@@ -315,8 +346,7 @@ with tab_zone:
         df_zone_all,
         column_config={
             "Symbols": st.column_config.LinkColumn("Symbols", display_text=r"NSE:(.*)"),
-            "LTP": "LTP",
-            "Futures LTP": "Futures LTP",
+            "Futures LTP": st.column_config.LinkColumn("Futures LTP", display_text=r"#(.*)"),
             "demand/Supply": "demand/Supply",
             "Near Timeframe": "Near Timeframe",
             "Entry Price (Proximal)": "Entry Price (Proximal)",
